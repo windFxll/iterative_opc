@@ -1,0 +1,6 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 运行输出（图片/掩模文件等生成产物，可随时用 python main.py 重新生成）
+output/
