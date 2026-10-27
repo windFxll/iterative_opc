@@ -699,8 +699,8 @@ def run_opc(target_pixels, target_polys, cfg):
                           printed.copy(), list(seg_epes))
         else:
             no_improve += 1
-            if no_improve >= 5:
-                print("  收敛：连续 5 轮无改善（像素量化极限附近）")
+            if no_improve >= 10:
+                print("  收敛：连续 10 轮无改善（像素量化极限附近）")
                 break
 
         # ---- 反馈移动 + 重建 ----
