@@ -133,22 +133,39 @@ def _draw_overview(outdir, fname, title, target, target_polys, mask, aerial,
     ax.set_xlabel("x (nm)")
     ax.set_ylabel("y (nm)")
 
-    # ---- 5) EPE 图（发散色带 + 对称零点） ----
+    # ---- 5) EPE 图：目标版图 vs 成像后图形的带符号偏差 ----
+    # 印刷轮廓按"与目标的带符号距离"着色（发散色带+对称零点）：
+    # 在目标内部（印小）= 蓝，在目标外部（印大）= 红，贴合 = 中性色。
+    import shapely.geometry as sg
     ax = fig.add_subplot(gs[1, 1])
-    verts, lines = _segments_of(polys)
-    _draw_polygons(ax, target_polys, "black", lw=0.7)
+    _draw_polygons(ax, target_polys, C_TARGET, lw=1.4)
+    printed_cont = extract_polygon(printed, cfg.GRID_N, cfg.PIXEL_SIZE_NM)
+    tgt_geo = sg.MultiPolygon([sg.Polygon(p) for p in target_polys])
+    lines, devs = [], []
+    for poly in printed_cont:
+        for k in range(len(poly)):
+            p1, p2 = poly[k], poly[(k + 1) % len(poly)]
+            mid = 0.5 * (p1 + p2)
+            pt = sg.Point(mid)
+            d = tgt_geo.boundary.distance(pt)
+            # 带符号偏差：中点在目标内部 = 印小（负），外部 = 印大（正）
+            devs.append(-d if tgt_geo.contains(pt) else d)
+            lines.append((p1, p2))
     if lines:
-        m = max(1.0, float(np.max(np.abs(seg_epes))))
+        m = max(1.0, float(np.max(np.abs(devs))))
         norm = TwoSlopeNorm(vmin=-m, vcenter=0.0, vmax=m)   # 0 居中为中性色
         lc = LineCollection(lines, cmap="RdBu_r", norm=norm, linewidths=2.2)
-        lc.set_array(np.asarray(seg_epes))
+        lc.set_array(np.asarray(devs))
         ax.add_collection(lc)
         cb = fig.colorbar(lc, ax=ax, fraction=0.046, pad=0.04)
         cb.set_label("EPE (nm)")
+        ax.legend(handles=[Line2D([0], [0], color=C_TARGET, lw=1.4,
+                                  label="目标版图")],
+                  loc="upper right", framealpha=0.9)
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal")
-    ax.set_title("边缘放置误差 EPE（红=印大 蓝=印小）")
+    ax.set_title("边缘放置误差 EPE（印刷轮廓着色：红=印大 蓝=印小）")
     ax.set_xlabel("x (nm)")
     ax.set_ylabel("y (nm)")
 
