@@ -107,34 +107,45 @@ def _split_edge(p1, p2, cfg):
     return segs
 
 
-def _make_cut(seg_in, seg_out, v_corner, cfg):
-    """在角点 v_corner 处做 45° 切口（凸角 serif / 凹角 hammerhead）。
+def _make_cut_pair(seg_in, seg_out, v_corner, corner_kind, cfg):
+    """在角点构造经典 OPC 结构：凸角外扩**方块 serif**、凹角**方形缺口
+    hammerhead**（不是 45° 尖角倒角）。
 
     几何：设进入角点的边方向 û_a、离开角点的边方向 û_b（CCW 行进），
-    V1 = V + s·û_a，V2 = V + s·û_b，切口段 V1→V2。
-    凸角（行进左转）与凹角（行进右转）公式完全一致，s>0 即切口边长。
-    切口沿两条邻边与图形连通（不会光栅化成孤立岛）。
-    会就地缩短 seg_in（p2=V1）与 seg_out（p1=V2），返回切口段。
+      V1 = V + s·û_a   （进边缩短端）
+      V2 = V1 + s·û_b  （方块外角）
+      V3 = V + s·û_b   （出边起点）
+    凸角：沿两条邻边连通地外扩一个 s×s 方块（serif）；
+    凹角：挖去一个 s×s 方块（hammerhead）。
+    会就地缩短 seg_in（p2=V1）与 seg_out（p1=V3），返回两个切口段
+    (cut_a: V1→V2, cut_b: V2→V3)，两者共享 corner_pt 对象以便配对。
     """
     s = cfg.SERIF_INIT_NM
     u_a = (v_corner - seg_in.p1) / np.linalg.norm(v_corner - seg_in.p1)
     u_b = (seg_out.p2 - v_corner) / np.linalg.norm(seg_out.p2 - v_corner)
     v1 = v_corner + s * u_a
-    v2 = v_corner + s * u_b
+    v2 = v1 + s * u_b
+    v3 = v_corner + s * u_b
     seg_in.p2 = v1
-    seg_out.p1 = v2
+    seg_out.p1 = v3
 
-    # 切口段：外法向 = 行进方向右侧（CCW 多边形自动指向图形外部，
-    # 即角平分线方向）；d_ref 以目标角点为准（EPE 反馈基准）
-    dc = v2 - v1
-    dc = dc / np.linalg.norm(dc)
-    n_cut = np.array([dc[1], -dc[0]])
-    # 符号：凸角（切口在角点外侧，n·û_a > 0）为 +1；
-    #       凹角（切口挖进图形内部，n·û_a < 0）为 −1
-    s_sign = 1 if float(n_cut @ u_a) > 0 else -1
-    return Segment(n=n_cut, d=float(n_cut @ v1), p1=v1, p2=v2,
-                   d_ref=float(n_cut @ v_corner), is_cut=True,
-                   corner_pt=v_corner.copy(), s_sign=s_sign)
+    # 符号：凸角（方块在角点外侧）+1；凹角（方块挖进图形内部）−1。
+    # 两个切口段的 s↔d 关系一致：d = d_ref + s_sign·s（无 √2 因子）
+    s_sign = 1 if corner_kind == "convex" else -1
+    corner_ref = v_corner.copy()          # 共享对象：配对识别用
+    d1 = v2 - v1
+    d1 = d1 / np.linalg.norm(d1)
+    n1 = np.array([d1[1], -d1[0]])
+    cut_a = Segment(n=n1, d=float(n1 @ v1), p1=v1, p2=v2,
+                    d_ref=float(n1 @ v_corner), is_cut=True,
+                    corner_pt=corner_ref, s_sign=s_sign)
+    d2 = v3 - v2
+    d2 = d2 / np.linalg.norm(d2)
+    n2 = np.array([d2[1], -d2[0]])
+    cut_b = Segment(n=n2, d=float(n2 @ v2), p1=v2, p2=v3,
+                    d_ref=float(n2 @ v_corner), is_cut=True,
+                    corner_pt=corner_ref, s_sign=s_sign)
+    return [cut_a, cut_b]
 
 
 def _build_polygon(verts, cfg, corner_kinds):
@@ -146,15 +157,15 @@ def _build_polygon(verts, cfg, corner_kinds):
     n = len(verts)
     groups = [_split_edge(verts[k], verts[(k + 1) % n], cfg) for k in range(n)]
 
-    chain = []          # [边0组, 切口1, 边1组, 切口2, ...]
+    chain = []          # [边0组, 切口对1, 边1组, 切口对2, ...]
     for k in range(n):
         chain.append(groups[k])
         kind = corner_kinds[(k + 1) % n]
         if kind is not None:
             seg_in = groups[k][-1]              # 进入角点(k+1)的段
             seg_out = groups[(k + 1) % n][0]    # 离开角点(k+1)的段
-            chain.append(_make_cut(seg_in, seg_out,
-                                   verts[(k + 1) % n], cfg))
+            chain.append(_make_cut_pair(seg_in, seg_out,
+                                        verts[(k + 1) % n], kind, cfg))
     segs = []
     for item in chain:
         segs.extend(item if isinstance(item, list) else [item])
@@ -393,21 +404,28 @@ def _rebuild_polygon(segs, cfg):
         if not seg.is_cut:
             seg.d = seg.d + seg.prev_move
 
-    # ---- 2. 切口锚定构造（两遍）：cut_pts[i] = (V1, V2) ----
+    # ---- 2. 方形切口（serif/hammerhead）锚定构造（两遍） ----
+    # 每个角点有一对切口段 (cut_a: V1→V2, cut_b: V2→V3)，共享 corner_pt：
+    #   V1 = 角点 + s·û_a（进边缩短端）
+    #   V2 = V1 + s·û_b（方块外角）
+    #   V3 = 角点 + s·û_b（出边起点）
+    # s ↔ d 为线性关系 d = d_ref + s_sign·s（无 √2 因子）。
     # 邻边方向必须从"边直线"（法向 n → 方向 d=(−n_y, n_x)）精确导出，
     # 不能用碎片几何端点——端点带断阶台阶噪声，方向逐年倾斜，
     # 与切口锚定互相放大（正反馈），最终折叠多边形。
-    # 第一遍：找邻边、算角点
+    # 第一遍：找邻边（跳过断阶和同角的另一段切口）、算角点
     cut_info = {}       # i -> (corner, seg_in, seg_out, d_in, d_out)
     for i, seg in enumerate(segs):
         if not seg.is_cut:
             continue
         k = (i - 1) % n
-        while segs[k].is_jog:
+        while (segs[k].is_jog
+               or (segs[k].is_cut and segs[k].corner_pt is seg.corner_pt)):
             k = (k - 1) % n
         seg_in = segs[k]
         k = (i + 1) % n
-        while segs[k].is_jog:
+        while (segs[k].is_jog
+               or (segs[k].is_cut and segs[k].corner_pt is seg.corner_pt)):
             k = (k + 1) % n
         seg_out = segs[k]
         corner = _line_intersection(seg_in.n, seg_in.d, seg_out.n, seg_out.d)
@@ -419,16 +437,18 @@ def _rebuild_polygon(segs, cfg):
             d_out = -d_out
         cut_info[i] = (corner, seg_in, seg_out, d_in, d_out)
 
-    # 沿链向两侧找下一个切口，用两个角点间的距离作为"整条邻边长度"
-    # （不能用共线碎片游程：两端 serif 增长会把中间碎片吃短，游程
-    # 自我收缩，把 serif 压回小尺寸，角落永远修不动）
+    # 沿链向两侧找"下一个不同角点的切口"，用两个角点间的距离作为
+    # "整条邻边长度"（不能用共线碎片游程：两端 serif 增长会把中间
+    # 碎片吃短，游程自我收缩，把 serif 压回小尺寸，角落修不动）
     corner_dist = {}
     for i in cut_info:
         corner = cut_info[i][0]
         for step in (-1, +1):
             k = (i + step) % n
             guard = 0
-            while not segs[k].is_cut and guard < len(segs):
+            while guard < len(segs) and not (
+                    segs[k].is_cut
+                    and segs[k].corner_pt is not segs[i].corner_pt):
                 k = (k + step) % n
                 guard += 1
             if segs[k].is_cut and k != i:
@@ -436,24 +456,43 @@ def _rebuild_polygon(segs, cfg):
             else:
                 corner_dist[(i, step)] = 1e9    # 整圈都没找到（防御）
 
-    # 第二遍：更新切口尺寸、锚定 V1/V2、吞噬被覆盖的碎片
+    # 第二遍：按"角点对"更新切口尺寸、锚定 V1/V2/V3、吞噬被覆盖的碎片
     cut_pts = {}
     drop = set()        # 被切口滑动完全覆盖、需从链中删除的碎片索引
     for i, (corner, seg_in, seg_out, d_in, d_out) in cut_info.items():
+        # 成对处理：跳过"对的第二段"（其数据与第一段相同）
+        prev_is_partner = (segs[(i - 1) % n].is_cut
+                           and segs[(i - 1) % n].corner_pt is segs[i].corner_pt)
+        if prev_is_partner:
+            continue
+        partner = ((i + 1) % n
+                   if (segs[(i + 1) % n].is_cut
+                       and segs[(i + 1) % n].corner_pt is segs[i].corner_pt)
+                   else None)
         seg = segs[i]
-        # 切口：位移换算成切口边长 s。注意凹角切口在角点内侧，
-        # d = d_ref − s/√2（s_sign=−1），换算必须带符号，否则凹角
-        # hammerhead 会卡在角点外侧、永远无法加深。
-        s_old = seg.s_sign * np.sqrt(2.0) * (seg.d - seg.d_ref)
+        # 尺寸更新：s_old = s_sign·(d − d_ref)；两段的位移取平均，
+        # 保证方块保持正方形（s 沿两个方向同步增长）
+        s_old = seg.s_sign * (seg.d - seg.d_ref)
+        m_avg = seg.prev_move
+        if partner is not None:
+            m_avg = 0.5 * (seg.prev_move + segs[partner].prev_move)
         # 上限 = [SERIF_MAX, 短邻边长度的一半 − 2nm] 的较小者：
         # 一条边两端各有一个切口，两边都自由增长会把整条边吃掉
         L_in = corner_dist.get((i, -1), 1e9)
         L_out = corner_dist.get((i, +1), 1e9)
         s_cap = max(1.0, 0.5 * min(L_in, L_out) - 2.0)
-        s = np.clip(s_old + seg.s_sign * np.sqrt(2.0) * seg.prev_move,
+        s = np.clip(s_old + seg.s_sign * m_avg,
                     1.0, min(cfg.SERIF_MAX_NM, s_cap))
-        seg.d = seg.d_ref + seg.s_sign * s / np.sqrt(2.0)
-        cut_pts[i] = (corner + s * d_in, corner + s * d_out)
+        seg.d = seg.d_ref + seg.s_sign * s
+        if partner is not None:
+            segs[partner].d = segs[partner].d_ref + segs[partner].s_sign * s
+        # 方块几何
+        v1 = corner + s * d_in
+        v2 = v1 + s * d_out
+        v3 = corner + s * d_out
+        cut_pts[i] = (v1, v2)
+        if partner is not None:
+            cut_pts[partner] = (v2, v3)
 
         # 切口滑动吞噬碎片：s 可能超过单个碎片长度（8~16nm），锚定点
         # 滑过碎片端点时该碎片被完全覆盖，必须从链中删除，否则碎片
@@ -468,7 +507,7 @@ def _rebuild_polygon(segs, cfg):
                     break               # 远端仍在切口外侧 → 部分保留
                 drop.add(k)             # 远端被覆盖 → 吞掉继续
             k = (k - 1) % n
-        k = (i + 1) % n
+        k = ((partner if partner is not None else i) + 1) % n
         while True:
             s2 = segs[k]
             if s2.is_cut:

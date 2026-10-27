@@ -100,6 +100,28 @@ def main():
         print("改善: %.1f%%" % (100.0 * (1 - rms_best / max(rms0, 1e-9))))
         print("max|EPE|:  %.2f nm -> %.2f nm"
               % (mx0, min(h[1] for h in history)))
+    # 印刷轮廓相对目标的直接偏差（初始掩模 vs 最终掩模）——最直观的质量指标
+    from mask_ops import extract_polygon
+    from optics import precompute_source_and_pupil, aerial_image, apply_resist_blur
+    import shapely.geometry as sg
+    try:
+        pre = precompute_source_and_pupil(config)
+        printed0 = (apply_resist_blur(aerial_image(target_pixels, config, pre),
+                                      config) < config.RESIST_THRESHOLD)
+        cont0 = sg.MultiPolygon([sg.Polygon(p) for p in extract_polygon(
+            printed0.astype(np.uint8), config.GRID_N, config.PIXEL_SIZE_NM)])
+        cont1 = sg.MultiPolygon([sg.Polygon(p) for p in extract_polygon(
+            printed, config.GRID_N, config.PIXEL_SIZE_NM)])
+        tgt = sg.MultiPolygon([sg.Polygon(p) for p in target_polys])
+
+        def mean_dev(cont):
+            pts = np.concatenate([np.asarray(p.exterior.coords)
+                                  for p in cont.geoms])
+            return np.mean([tgt.boundary.distance(sg.Point(p)) for p in pts])
+        print("印刷轮廓平均偏差: %.1f nm -> %.1f nm"
+              % (mean_dev(cont0), mean_dev(cont1)))
+    except Exception:
+        pass
     print("输出目录: %s/  (summary.png 汇总图, iter_*.png 逐轮帧, "
           "history.txt 收敛数据, final_mask.txt 最终掩模)" % config.OUT_DIR)
     print("提示: 改 config.py 的 DEMO_NAME 可切换示例图形；")
