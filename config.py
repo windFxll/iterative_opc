@@ -62,7 +62,10 @@ MAX_EDGE_STEP_NM = 3.0  # 单次迭代边缘位移限幅 (nm)
 MIN_EDGE_SEGMENT_NM = 8.0   # 边缘分段最短长度 (nm)
 MAX_EDGE_SEGMENT_NM = 16.0  # 边缘分段最长长度 (nm)，超过则拆分
 CORNER_EXCLUSION_NM = 8.0   # EPE 采样点距段端点/角点的避让距离 (nm)
-EPE_SEARCH_NM = 40.0        # EPE 沿法线搜索半径 (nm)
+EPE_SEARCH_NM = 60.0        # EPE 沿法线搜索半径 (nm)。角落印刷轮廓圆化约
+                            # 30~45nm，搜索半径太小会找不到阈值交点、EPE 封顶，
+                            # 角点反馈失去真实测量值（封顶值+切口偏移还随 serif
+                            # 增长而"变差"，形成把 serif 推向极限的假反馈）
 SERIF_INIT_NM = 4.0     # 角落切口（serif 种子）初始边长 s₀ (nm)
 SERIF_MAX_NM = 30.0     # 切口边长上限 (nm)，超出拒收
 MAX_BIAS_NM = 40.0      # 边缘累计偏置上限 (nm)：|边当前位置 − 目标位置| 不超过该值。

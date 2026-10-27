@@ -351,6 +351,26 @@ def compute_moves(seg_epes, polys, cfg, it):
     return moves
 
 
+def _collinear_run_len(segs, i, step):
+    """从段 i 沿链方向 step 走，累计与它共线的连续边缘碎片总长
+    （到切口/断阶/方向改变为止）。用于估算切口相邻的"整条边"长度。"""
+    i = i % len(segs)
+    n0 = segs[i].n
+    total = 0.0
+    k = i
+    seen = set()
+    while k % len(segs) not in seen:
+        seen.add(k % len(segs))
+        s = segs[k % len(segs)]
+        if s.is_cut or s.is_jog:
+            break
+        if abs(np.cross(n0, s.n)) > np.sin(np.deg2rad(1.0)):
+            break
+        total += s.length()
+        k += step
+    return total
+
+
 def _rebuild_polygon(segs, cfg):
     """移动后重建多边形几何。
 
@@ -368,34 +388,20 @@ def _rebuild_polygon(segs, cfg):
     if n == 0:
         return []
 
-    # ---- 1. 计算每段的新直线偏移 ----
-    for i, seg in enumerate(segs):
-        if seg.is_cut:
-            # 切口：位移换算成切口边长 s。注意凹角切口在角点内侧，
-            # d = d_ref − s/√2（s_sign=−1），换算必须带符号，
-            # 否则凹角 hammerhead 会卡在角点外侧、永远无法加深。
-            # 上限取 [SERIF_MAX, 两条邻边长度的一半 − 2nm] 的较小者——
-            # 一条短边两端各有一个切口，若两边都自由增长会把整条边
-            # "吃掉"，链序翻转成针状折返（蝴蝶结），必须约束。
-            s_old = seg.s_sign * np.sqrt(2.0) * (seg.d - seg.d_ref)
-            L_prev = segs[i - 1].length()
-            L_next = segs[(i + 1) % n].length()
-            s_cap = max(1.0, 0.5 * min(L_prev, L_next) - 2.0)
-            s_new = np.clip(s_old + seg.s_sign * np.sqrt(2.0) * seg.prev_move,
-                            1.0, min(cfg.SERIF_MAX_NM, s_cap))
-            seg.d = seg.d_ref + seg.s_sign * s_new / np.sqrt(2.0)
-        else:
+    # ---- 1. 计算每段的新直线偏移（切口段在第 2 步统一处理） ----
+    for seg in segs:
+        if not seg.is_cut:
             seg.d = seg.d + seg.prev_move
 
-    # ---- 2. 切口锚定构造：cut_pts[i] = (V1, V2) ----
+    # ---- 2. 切口锚定构造（两遍）：cut_pts[i] = (V1, V2) ----
     # 邻边方向必须从"边直线"（法向 n → 方向 d=(−n_y, n_x)）精确导出，
     # 不能用碎片几何端点——端点带断阶台阶噪声，方向逐年倾斜，
     # 与切口锚定互相放大（正反馈），最终折叠多边形。
-    cut_pts = {}
+    # 第一遍：找邻边、算角点
+    cut_info = {}       # i -> (corner, seg_in, seg_out, d_in, d_out)
     for i, seg in enumerate(segs):
         if not seg.is_cut:
             continue
-        # 向两侧找相邻的"边"（跳过断阶）
         k = (i - 1) % n
         while segs[k].is_jog:
             k = (k - 1) % n
@@ -404,17 +410,88 @@ def _rebuild_polygon(segs, cfg):
         while segs[k].is_jog:
             k = (k + 1) % n
         seg_out = segs[k]
-        # 角点 = 两条邻边移动后直线的交点（两边垂直，良态）
         corner = _line_intersection(seg_in.n, seg_in.d, seg_out.n, seg_out.d)
-        s = seg.s_sign * np.sqrt(2.0) * (seg.d - seg.d_ref)
-        # 邻边"进入角点"的单位方向（由直线法向精确导出）
         d_in = np.array([-seg_in.n[1], seg_in.n[0]])
         if np.dot(d_in, corner - seg_in.p1) < 0:
             d_in = -d_in
         d_out = np.array([-seg_out.n[1], seg_out.n[0]])
         if np.dot(d_out, seg_out.p2 - corner) < 0:
             d_out = -d_out
+        cut_info[i] = (corner, seg_in, seg_out, d_in, d_out)
+
+    # 沿链向两侧找下一个切口，用两个角点间的距离作为"整条邻边长度"
+    # （不能用共线碎片游程：两端 serif 增长会把中间碎片吃短，游程
+    # 自我收缩，把 serif 压回小尺寸，角落永远修不动）
+    corner_dist = {}
+    for i in cut_info:
+        corner = cut_info[i][0]
+        for step in (-1, +1):
+            k = (i + step) % n
+            guard = 0
+            while not segs[k].is_cut and guard < len(segs):
+                k = (k + step) % n
+                guard += 1
+            if segs[k].is_cut and k != i:
+                corner_dist[(i, step)] = np.linalg.norm(corner - cut_info[k][0])
+            else:
+                corner_dist[(i, step)] = 1e9    # 整圈都没找到（防御）
+
+    # 第二遍：更新切口尺寸、锚定 V1/V2、吞噬被覆盖的碎片
+    cut_pts = {}
+    drop = set()        # 被切口滑动完全覆盖、需从链中删除的碎片索引
+    for i, (corner, seg_in, seg_out, d_in, d_out) in cut_info.items():
+        seg = segs[i]
+        # 切口：位移换算成切口边长 s。注意凹角切口在角点内侧，
+        # d = d_ref − s/√2（s_sign=−1），换算必须带符号，否则凹角
+        # hammerhead 会卡在角点外侧、永远无法加深。
+        s_old = seg.s_sign * np.sqrt(2.0) * (seg.d - seg.d_ref)
+        # 上限 = [SERIF_MAX, 短邻边长度的一半 − 2nm] 的较小者：
+        # 一条边两端各有一个切口，两边都自由增长会把整条边吃掉
+        L_in = corner_dist.get((i, -1), 1e9)
+        L_out = corner_dist.get((i, +1), 1e9)
+        s_cap = max(1.0, 0.5 * min(L_in, L_out) - 2.0)
+        s = np.clip(s_old + seg.s_sign * np.sqrt(2.0) * seg.prev_move,
+                    1.0, min(cfg.SERIF_MAX_NM, s_cap))
+        seg.d = seg.d_ref + seg.s_sign * s / np.sqrt(2.0)
         cut_pts[i] = (corner + s * d_in, corner + s * d_out)
+
+        # 切口滑动吞噬碎片：s 可能超过单个碎片长度（8~16nm），锚定点
+        # 滑过碎片端点时该碎片被完全覆盖，必须从链中删除，否则碎片
+        # 反转成负长度、多边形折叠（表现为 serif 被有效性检查压回）。
+        k = (i - 1) % n
+        while True:
+            s2 = segs[k]
+            if s2.is_cut:
+                break
+            if not s2.is_jog:
+                if s <= np.linalg.norm(s2.p1 - corner) + 1e-6:
+                    break               # 远端仍在切口外侧 → 部分保留
+                drop.add(k)             # 远端被覆盖 → 吞掉继续
+            k = (k - 1) % n
+        k = (i + 1) % n
+        while True:
+            s2 = segs[k]
+            if s2.is_cut:
+                break
+            if not s2.is_jog:
+                if s <= np.linalg.norm(s2.p2 - corner) + 1e-6:
+                    break
+                drop.add(k)
+            k = (k + 1) % n
+
+    # 删除被吞噬的碎片，并重映射 cut_pts 的索引
+    if drop:
+        old_to_new = {}
+        keep = []
+        for idx, s in enumerate(segs):
+            if idx in drop:
+                continue
+            old_to_new[idx] = len(keep)
+            keep.append(s)
+        segs = keep
+        n = len(segs)
+        cut_pts = {old_to_new[i]: v for i, v in cut_pts.items()
+                   if i in old_to_new}
 
     # ---- 3. 段与段之间的连接点 ----
     # 平行判定用 1° 角容差（不能用机器精度）：同一长边上的相邻碎片
@@ -430,7 +507,12 @@ def _rebuild_polygon(segs, cfg):
         elif seg.is_cut:
             pt = cut_pts[i][0]
         elif prev.is_jog or seg.is_jog:
-            pt = _line_intersection(prev.n, prev.d, seg.n, seg.d)
+            if abs(np.cross(prev.n, seg.n)) < PARALLEL_TOL:
+                # 防御：切口吞噬碎片后两个断阶可能相邻且平行（都垂直于
+                # 同一条边），交点退化 → 取两端点中点
+                pt = 0.5 * (prev.p2 + seg.p1)
+            else:
+                pt = _line_intersection(prev.n, prev.d, seg.n, seg.d)
         elif abs(np.cross(prev.n, seg.n)) < PARALLEL_TOL:
             # 共线碎片：位移不同则用断阶连接（两点在过旧顶点的垂线上）
             V_old = seg.p1
@@ -602,6 +684,12 @@ def run_opc(target_pixels, target_polys, cfg):
         print("迭代 %2d:  RMS EPE = %.3f nm,  max|EPE| = %.3f nm"
               % (it, rms, mx))
 
+        # 存帧必须在移动之前：画的是"本轮评估的几何状态 + 它的 EPE"，
+        # 移动之后段列表结构变化（断阶增减），旧 EPE 会标错到新段上
+        if cfg.SAVE_FRAMES:
+            save_frame(cfg.OUT_DIR, it, target_pixels, target_polys, mask,
+                       aerial, printed, polys, seg_epes, history, cfg)
+
         if rms <= cfg.EPE_TOL_NM:
             print("  收敛：RMS EPE 达到容差 %.1f nm" % cfg.EPE_TOL_NM)
             break
@@ -611,8 +699,8 @@ def run_opc(target_pixels, target_polys, cfg):
                           printed.copy(), list(seg_epes))
         else:
             no_improve += 1
-            if no_improve >= 3:
-                print("  收敛：连续 3 轮无改善（像素量化极限附近）")
+            if no_improve >= 5:
+                print("  收敛：连续 5 轮无改善（像素量化极限附近）")
                 break
 
         # ---- 反馈移动 + 重建 ----
@@ -640,10 +728,6 @@ def run_opc(target_pixels, target_polys, cfg):
             print("  [DRC] min_width=%.1f nm (限 %.1f), min_space=%.1f nm (限 %.1f)"
                   % (drc["min_width"], cfg.MIN_WIDTH_NM,
                      drc["min_space"], cfg.MIN_SPACE_NM))
-
-        if cfg.SAVE_FRAMES:
-            save_frame(cfg.OUT_DIR, it, target_pixels, target_polys, mask,
-                       aerial, printed, polys, seg_epes, history, cfg)
 
     # 返回历史最佳状态（若最后几轮在角点区振荡，最佳可能出现在中间轮）
     if best_state is not None:
