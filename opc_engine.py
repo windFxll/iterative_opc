@@ -31,6 +31,7 @@ import numpy as np
 from scipy import ndimage
 
 from mask_ops import (polygons_to_pixels, extract_polygon, classify_corner,
+                      cross2,
                       cleanup_mask, check_design_rules)
 from optics import aerial_image, apply_resist_blur, precompute_source_and_pupil
 
@@ -286,18 +287,61 @@ def _find_crossing(aerial, p, n, cfg):
     return float(ts[k] + f * (ts[k + 1] - ts[k]))
 
 
+def _corner_epe(poly, i, aerial, cfg):
+    """沿角平分线测量角点 EPE（方形 serif/hammerhead 的正确度量）。
+
+    方形 serif 的两个切口面**平行于相邻边**，沿其法线扫描永远扫不到
+    印刷轮廓（切口面整个落在轮廓外侧），必须改为：从目标角点沿角平分线
+    扫描找印刷轮廓交点 t。
+      t < 0：印刷轮廓在角点内侧（圆化）→ 凸角需要更大的 serif；
+      t > 0：印刷轮廓鼓出角点/凹角缺口鼓包 → 凹角需要更深的 hammerhead。
+    返回 t（带符号距离，nm），feedback Δ=−η·EPE 与重建的
+    s += s_sign·Δ 组合后：
+      凸角（s_sign=+1）：Δs = −η·t，t<0（圆化）时 serif 增大 ✓
+      凹角（s_sign=−1）：Δs = +η·t，t>0（缺口鼓包）时 hammerhead 加深 ✓
+    """
+    n_seg = len(poly)
+    seg = poly[i]
+    corner = seg.corner_pt
+    # 向两侧找真正的"边"（跳过断阶与切口），用它们的外法向求角平分线
+    k = (i - 1) % n_seg
+    while (poly[k].is_jog or poly[k].is_cut) and k != i:
+        k = (k - 1) % n_seg
+    n_in = poly[k].n
+    k = (i + 1) % n_seg
+    while (poly[k].is_jog or poly[k].is_cut) and k != i:
+        k = (k + 1) % n_seg
+    n_out = poly[k].n
+    bis = n_in + n_out
+    nb = np.linalg.norm(bis)
+    if nb < 1e-9:
+        return 0.0
+    bis = bis / nb
+    return float(_find_crossing(aerial, corner, bis, cfg))
+
+
 def compute_epe(polys, aerial, cfg):
     """计算所有段的 EPE（段级中位数 + 全体采样点列表）。
 
+    边缘碎片：沿外法线采样找阈值交点（段级中位数）。
+    切口段（serif/hammerhead 的方形边）：沿角平分线从角点测量，
+    同一角点的两段切口共用同一个角点 EPE（见 _corner_epe）。
+
     返回 (seg_epes, epe_all)：
-      seg_epes : 与 _all_segs(polys) 同顺序的段级 EPE（中位数，nm）
+      seg_epes : 与 _all_segs(polys) 同顺序的段级 EPE（nm）
       epe_all  : 全体采样点 EPE（用于统计 rms/max）
     """
     seg_epes, epe_all = [], []
     for poly in polys:
-        for seg in poly:
+        n_seg = len(poly)
+        for i, seg in enumerate(poly):
             if seg.is_jog:
                 seg_epes.append(0.0)      # 人造连接段不参与反馈
+                continue
+            if seg.is_cut:
+                e = _corner_epe(poly, i, aerial, cfg)
+                seg_epes.append(e)
+                epe_all.append(e)
                 continue
             L = seg.length()
             if L < 1e-6:
@@ -375,7 +419,7 @@ def _collinear_run_len(segs, i, step):
         s = segs[k % len(segs)]
         if s.is_cut or s.is_jog:
             break
-        if abs(np.cross(n0, s.n)) > np.sin(np.deg2rad(1.0)):
+        if abs(cross2(n0, s.n)) > np.sin(np.deg2rad(1.0)):
             break
         total += s.length()
         k += step
@@ -546,13 +590,13 @@ def _rebuild_polygon(segs, cfg):
         elif seg.is_cut:
             pt = cut_pts[i][0]
         elif prev.is_jog or seg.is_jog:
-            if abs(np.cross(prev.n, seg.n)) < PARALLEL_TOL:
+            if abs(cross2(prev.n, seg.n)) < PARALLEL_TOL:
                 # 防御：切口吞噬碎片后两个断阶可能相邻且平行（都垂直于
                 # 同一条边），交点退化 → 取两端点中点
                 pt = 0.5 * (prev.p2 + seg.p1)
             else:
                 pt = _line_intersection(prev.n, prev.d, seg.n, seg.d)
-        elif abs(np.cross(prev.n, seg.n)) < PARALLEL_TOL:
+        elif abs(cross2(prev.n, seg.n)) < PARALLEL_TOL:
             # 共线碎片：位移不同则用断阶连接（两点在过旧顶点的垂线上）
             V_old = seg.p1
             A = V_old + prev.prev_move * prev.n      # prev 的新终点
@@ -691,6 +735,25 @@ def apply_moves(polys, cfg):
 # 迭代主循环
 # ------------------------------------------------------------------
 
+def _contour_dev(printed, target_polys, cfg):
+    """印刷轮廓与目标版图的对称平均偏差（nm）——最贴近"看得见的质量"
+    的指标。用作历史最佳状态的判据：EPE 的 rms 由角点过渡区样本主导，
+    在 serif 过冲时可能"变好"，但视觉上轮廓反而变差。"""
+    import shapely.geometry as sg
+    cont = extract_polygon(printed.astype(np.uint8), cfg.GRID_N,
+                           cfg.PIXEL_SIZE_NM)
+    if not cont:
+        return 1e9
+    cont_geo = sg.MultiPolygon([sg.Polygon(p) for p in cont])
+    tgt_geo = sg.MultiPolygon([sg.Polygon(p) for p in target_polys])
+    d1 = np.mean([tgt_geo.boundary.distance(sg.Point(q))
+                  for p in cont for q in p])
+    tpts = np.concatenate([np.linspace(p, np.roll(p, -1, axis=0), 40)[:-1].
+                          reshape(-1, 2) for p in target_polys])
+    d2 = np.mean([cont_geo.boundary.distance(sg.Point(q)) for q in tpts])
+    return float(0.5 * (d1 + d2))
+
+
 def run_opc(target_pixels, target_polys, cfg):
     """完整的迭代 OPC 主循环。
 
@@ -706,7 +769,7 @@ def run_opc(target_pixels, target_polys, cfg):
                                for poly in polys],
                               cfg.GRID_N, cfg.PIXEL_SIZE_NM)
     history = []        # (rms, max|EPE|) 每轮一条
-    best_rms, no_improve = np.inf, 0
+    best_dev, no_improve = np.inf, 0
     best_state = None   # 历史最佳状态（角点区域可能来回振荡，返回最佳）
     seg_epes, aerial, printed = [], None, None
 
@@ -720,8 +783,10 @@ def run_opc(target_pixels, target_polys, cfg):
         rms = float(np.sqrt(np.mean(np.square(epe_all))))
         mx = float(np.max(np.abs(epe_all)))
         history.append((rms, mx))
-        print("迭代 %2d:  RMS EPE = %.3f nm,  max|EPE| = %.3f nm"
-              % (it, rms, mx))
+        # 真实轮廓偏差：用于"历史最佳"判据（比 rms 更贴近视觉质量）
+        dev = _contour_dev(printed, target_polys, cfg)
+        print("迭代 %2d:  RMS EPE = %.2f nm,  轮廓偏差 = %.2f nm"
+              % (it, rms, dev))
 
         # 存帧必须在移动之前：画的是"本轮评估的几何状态 + 它的 EPE"，
         # 移动之后段列表结构变化（断阶增减），旧 EPE 会标错到新段上
@@ -729,17 +794,15 @@ def run_opc(target_pixels, target_polys, cfg):
             save_frame(cfg.OUT_DIR, it, target_pixels, target_polys, mask,
                        aerial, printed, polys, seg_epes, history, cfg)
 
-        if rms <= cfg.EPE_TOL_NM:
-            print("  收敛：RMS EPE 达到容差 %.1f nm" % cfg.EPE_TOL_NM)
-            break
-        if rms < best_rms - 1e-9:
-            best_rms, no_improve = rms, 0
+        if dev < best_dev - 1e-9:
+            best_dev, no_improve = dev, 0
             best_state = (mask.copy(), _copy_polys(polys), aerial.copy(),
-                          printed.copy(), list(seg_epes))
+                          printed.copy(), list(seg_epes), dev)
         else:
             no_improve += 1
             if no_improve >= 10:
-                print("  收敛：连续 10 轮无改善（像素量化极限附近）")
+                print("  收敛：连续 10 轮轮廓偏差无改善（最佳 %.2f nm）"
+                      % best_dev)
                 break
 
         # ---- 反馈移动 + 重建 ----
@@ -770,9 +833,10 @@ def run_opc(target_pixels, target_polys, cfg):
 
     # 返回历史最佳状态（若最后几轮在角点区振荡，最佳可能出现在中间轮）
     if best_state is not None:
-        mask, polys, aerial, printed, seg_epes = best_state
+        mask, polys, aerial, printed, seg_epes, best_dev = best_state
+        print("  输出历史最佳状态：轮廓偏差 %.2f nm" % best_dev)
 
     return {"mask": mask, "polys": polys, "aerial": aerial,
             "printed": printed, "history": history,
             "seg_epes": seg_epes, "target": target_pixels,
-            "target_polys": target_polys}
+            "target_polys": target_polys, "best_dev": best_dev}

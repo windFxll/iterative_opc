@@ -115,6 +115,12 @@ def _signed_area(poly):
     return 0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y)
 
 
+def cross2(a, b):
+    """二维叉积（标量）。numpy 2.x 的 np.cross 不再支持二维向量，
+    全项目统一用它做共线/平行判定。"""
+    return float(a[0] * b[1] - a[1] * b[0])
+
+
 def _remove_redundant(pts, tol=1e-6):
     """去掉首尾重复与共线中间点（共线判定用叉积，避免角度除法）。"""
     if len(pts) < 3:
@@ -135,7 +141,7 @@ def _remove_redundant(pts, tol=1e-6):
         if n1 < tol or n2 < tol:
             continue        # b 与 a 或 c 重合 → 丢弃 b
         # 叉积 ≈ 0 且同向（点积 > 0）→ b 在直线中间 → 丢弃
-        if abs(np.cross(v1, v2)) < tol * n1 * n2 and np.dot(v1, v2) > 0:
+        if abs(cross2(v1, v2)) < tol * n1 * n2 and np.dot(v1, v2) > 0:
             continue
         keep.append(b)
     return np.array(keep)

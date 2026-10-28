@@ -77,12 +77,45 @@ def t_shape(cfg):
     return _union_rects(rects)
 
 
+def elbow_array(cfg):
+    """肘形阵列：周期排列的 L 折线（竖臂 + 右下横臂）。
+
+    周期环境（相邻折线间有可比的邻近效应）+ 每个折线带 1 个凹角、
+    5 个凸角——是最能体现 corner 修正的周期性示例。
+    """
+    w, arm, pitch, n = (cfg.ELBOW_W, cfg.ELBOW_ARM,
+                        cfg.ELBOW_PITCH, cfg.ELBOW_N)
+    x0 = -pitch * (n - 1) / 2.0
+    shift = (arm - w) / 2.0        # 让横臂右伸的 L 形整体居中
+    polys = []
+    for k in range(n):
+        cx = x0 + k * pitch - shift
+        polys.append(_rect(cx - w / 2, -arm / 2, cx + w / 2, arm / 2))       # 竖臂
+        polys.append(_rect(cx - w / 2, -arm / 2, cx - w / 2 + arm,
+                           -arm / 2 + w))                                    # 底横臂
+    return _union_rects(polys)
+
+
 def dense_lines(cfg):
     """密集线条阵列：N 条竖直等间距线条。看线条周期邻近效应与边缘位移。"""
     w, pitch, n = cfg.LINES_W, cfg.LINES_PITCH, cfg.LINES_N
     x0 = -pitch * (n - 1) / 2.0
     return [_rect(x0 + k * pitch - w / 2, -200.0, x0 + k * pitch + w / 2, 200.0)
             for k in range(n)]
+
+
+def line_end_array(cfg):
+    """线端阵列：周期线条中，中间线的线端回缩（线端在周期环境中的
+    邻近效应修正——经典 OPC 案例）。两侧线全长为 ±200nm。"""
+    w, pitch, n = cfg.LEA_W, cfg.LEA_PITCH, cfg.LEA_N
+    half = cfg.LEA_MID_HALF
+    x0 = -pitch * (n - 1) / 2.0
+    polys = []
+    for k in range(n):
+        h = half if k == n // 2 else 200.0     # 中间线回缩
+        polys.append(_rect(x0 + k * pitch - w / 2, -h,
+                           x0 + k * pitch + w / 2, h))
+    return polys
 
 
 def contact_array(cfg):
@@ -165,9 +198,11 @@ def make_target(cfg, out_dir=None):
     from mask_ops import polygons_to_pixels, extract_polygon
 
     generators = {
+        "elbow_array": elbow_array,
         "l_shape": l_shape,
         "t_shape": t_shape,
         "dense_lines": dense_lines,
+        "line_end_array": line_end_array,
         "contact_array": contact_array,
         "line_end_gap": line_end_gap,
         "isolated_line": isolated_line,

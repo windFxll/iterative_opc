@@ -10,11 +10,14 @@
 ## 快速开始
 
 ```bash
-conda activate slitho_api
+conda activate litho_sim      # 需要 numpy/scipy/matplotlib/opencv-python/shapely
 cd D:\Sync\project\diffusion4ilt\iterative_opc
-python main.py              # 跑默认示例（L 形）
+python main.py              # 跑默认示例（肘形阵列，周期 + 角点）
 python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 ```
+
+> 环境说明：早期版本用 `slitho_api` 环境，其中的科学计算包已不存在；
+> 目前的可用环境是 `litho_sim`（需 `pip install opencv-python shapely imageio`）。
 
 输出在 `output/` 目录：
 - `summary.png` —— 最终总览图（目标 / 掩模 / 空间像 / 印刷轮廓对比 / EPE 图 / 收敛曲线）
@@ -28,7 +31,7 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 | 节 | 内容 | 改什么 |
 |---|---|---|
 | [1] 演示选择 | `DEMO_NAME` | 切换示例图形；`'custom'` 时配合 `CUSTOM_MASK_FILE` 读自定义版图 |
-| [2] 仿真网格 | `GRID_N`, `PIXEL_SIZE_NM` | 视场 = GRID_N × 像素尺寸（默认 256×2nm = 512nm） |
+| [2] 仿真网格 | `GRID_N`, `PIXEL_SIZE_NM` | 视场 = GRID_N × 像素尺寸（默认 384×2nm = 768nm） |
 | [3] 光刻参数 | λ=193nm, NA=1.35, 环形照明 σ=0.6~0.9, 离焦, 阈值 0.3 | 换光学条件看邻近效应变化 |
 | [4] 光源采样 | 每环点数 × 环数 | 前向模型精度/速度（计算量 ∝ 点数×环数） |
 | [5] OPC 迭代 | 迭代次数、EPE 容差、反馈增益 η、阻尼、单步限幅、serif 尺寸上限、累计偏置上限 | 收敛行为 |
@@ -36,7 +39,18 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 | [7] 输出 | 输出目录、逐帧/动画开关 | `SAVE_GIF=True` 生成 opc.gif |
 | [8] 图形几何 | 各示例图形的尺寸（nm） | 换图形尺寸 |
 
-**入门顺序建议**：先 `dense_lines` 看边缘位移修正 → `l_shape` 看角落 serif/hammerhead → `line_end_gap` 看线端回缩修正 → `contact_array` 看强邻近效应。
+**示例图形**（默认特征尺寸 200nm，k₁≈1.4，以周期图案为主）：
+
+| DEMO_NAME | 图案 | 看点 |
+|---|---|---|
+| `elbow_array` ★默认 | 2 根周期排列的 L 折线（周期 350nm） | 周期环境 + 每根 4 凸角 1 凹角 |
+| `dense_lines` | 3 条 200nm 线、周期 280nm | 密集线条边缘位移 |
+| `line_end_array` | 3 条周期线，中间线线端回缩 | 线端在周期环境中的修正 |
+| `contact_array` | 2×2 接触孔（200nm，周期 320nm） | 二维周期、每孔 4 角 |
+| `l_shape` / `t_shape` | 单个 L / T 形 | 凸角 serif、凹角 hammerhead |
+| `line_end_gap` / `isolated_line` | 线端间隙 / 孤立线 | 与周期图案对比邻近效应 |
+
+**入门顺序建议**：`elbow_array`（周期+角点）→ `dense_lines`（纯边缘）→ `contact_array`（二维周期）→ `line_end_array`（线端）。
 
 **自定义版图**：`DEMO_NAME='custom'` 时读取 `CUSTOM_MASK_FILE`：
 - `.txt`：`GRID_N × GRID_N` 的 0/1 矩阵（空格/逗号分隔均可，1=图形）
@@ -61,18 +75,27 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 
 ## 预期结果
 
-默认参数（λ=193nm, NA=1.35, 环形 0.6~0.9, 阈值 0.3, 2nm 像素，100nm 线宽级图形，阻尼 0.85）下 L 形示例的关键测点（印刷位置相对目标，负 = 内缩）：
+默认参数（λ=193nm, NA=1.35, 环形 0.6~0.9, 阈值 0.3, 2nm 像素, GRID_N=384,
+200nm 特征, 阻尼 0.85）下各示例的**印刷轮廓对称平均偏差**（初始 → 输出）：
 
-| 测点 | 初始（无修正） | OPC 后 |
+| 示例 | 初始 | OPC 后 |
 |---|---|---|
-| 竖臂右边缘中点 | −10.5 nm | −0.5 nm |
-| 横臂线端 | −10.7 nm | +3.0 nm |
-| 凸角（角平分线方向） | −30.5 nm | −5.7 nm |
-| 印刷轮廓平均偏差 | ~16 nm | ~3 nm |
+| elbow_array | 10.4 nm | 2.9 nm |
+| dense_lines | 6.6 nm | 2.4 nm |
+| line_end_array | 6.6 nm | 2.3 nm |
+| contact_array | 12.5 nm | 1.9 nm |
+| l_shape | 8.8 nm | 2.4 nm |
+| t_shape | 8.6 nm | 2.1 nm |
+| line_end_gap | 10.1 nm | 1.9 nm |
+| isolated_line | 10.5 nm | 1.8 nm |
 
-掩模形态符合经典 OPC 规范：边缘偏置 −10~+15nm，凸角外扩**方块 serif** ~19nm，凹角**方形缺口 hammerhead**（尺寸受短邻边长度限制，L 形凹角的邻边仅 50nm，hammerhead 上限约 23nm，凹角残差 ~25nm 是该几何约束下的极限）。掩模面积约为目标的 1.3 倍。
+掩模形态符合经典 OPC 规范：边缘偏置约 −12~+15nm，凸角外扩**方块 serif**
+（肘形阵列约 18nm），凹角**方形缺口 hammerhead**，掩模面积约为目标的
+1.13 倍（肘形阵列）。
 
-收敛行为提示：默认阻尼 0.85 约 30~40 轮收敛（高质量档）；把 `DAMPING` 改回 0.6 约 10 轮收敛但角点残差更大（快速档）。
+**历史最佳状态判据**：迭代中角点区可能出现过冲振荡，程序记录每轮的
+"印刷轮廓与目标的对称平均偏差"，输出偏差最小的一轮（而不是末轮），
+因此运行日志里的 RMS EPE 可能略有起伏而输出仍是最佳状态。
 
 ## 已知局限（物理原因）
 
