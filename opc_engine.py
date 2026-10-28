@@ -478,14 +478,40 @@ def _rebuild_polygon(segs, cfg):
       - 边 ↔ 边（不平行）：直线交点（角点处）。
     返回新的 Segment 列表（p1/p2 一致、法向重算、方向统一 CCW）。
     """
+    # 断阶只是派生连接件（不属于掩模的真实状态）：每轮重建时先丢弃，
+    # 再根据各段直线偏移之差重新生成。否则上轮遗留的断阶会阻止合并，
+    # 其长度还会随相邻边偏移之差继续长大（50nm 级台阶、薄连接）。
+    segs = [s for s in segs if not s.is_jog]
     n = len(segs)
     if n == 0:
         return []
+
+    # 平行判定用 1° 角容差（不能用机器精度）：同一长边上的相邻碎片
+    # 因断阶台阶差会产生 ~1° 的轻微不共线，若按"非平行"求交点，
+    # 两条近平行线的交点在数万 nm 之外 → 多边形产生尖刺/蝴蝶结。
+    PARALLEL_TOL = np.sin(np.deg2rad(1.0))
 
     # ---- 1. 计算每段的新直线偏移（切口段在第 2 步统一处理） ----
     for seg in segs:
         if not seg.is_cut:
             seg.d = seg.d + seg.prev_move
+
+    # ---- 1b. 平滑：共线相邻碎片位移差过大的先合并 ----
+    # 断阶长度 = 两段直线偏移之差；它每轮都可能继续长大，若等到建断阶
+    # 时才判断就晚了。这里先统一 d：差值 <0.25nm 完全重合的直接并到
+    # 中位线；差值 >MAX_JOG_NM 的也并到中位线（OPC 掩模不做大台阶，
+    # 否则台阶处会出现纤细连接和碎块）。
+    n0 = len(segs)
+    for i in range(n0):
+        a, b = segs[i - 1], segs[i]
+        if a.is_cut or b.is_cut or a.is_jog or b.is_jog:
+            continue
+        if abs(cross2(a.n, b.n)) >= PARALLEL_TOL:
+            continue
+        gap = abs(a.d - b.d)
+        if gap < 0.25 or gap > getattr(cfg, "MAX_JOG_NM", 8.0):
+            d_mid = 0.5 * (a.d + b.d)
+            a.d = b.d = d_mid
 
     # ---- 2. 方形切口（serif/hammerhead）锚定构造（两遍） ----
     # 每个角点有一对切口段 (cut_a: V1→V2, cut_b: V2→V3)，共享 corner_pt：
@@ -616,10 +642,6 @@ def _rebuild_polygon(segs, cfg):
                    if i in old_to_new}
 
     # ---- 3. 段与段之间的连接点 ----
-    # 平行判定用 1° 角容差（不能用机器精度）：同一长边上的相邻碎片
-    # 因断阶台阶差会产生 ~1° 的轻微不共线，若按"非平行"求交点，
-    # 两条近平行线的交点在数万 nm 之外 → 多边形产生尖刺/蝴蝶结。
-    PARALLEL_TOL = np.sin(np.deg2rad(1.0))
     pt_prev = {}      # 段 i 的新 p1（与段 i-1 的连接点）
     jogs = {}         # 段 i-1 之后插入的断阶: (A, B) = (prev 新终点, seg 新起点)
     for i in range(n):
@@ -645,11 +667,15 @@ def _rebuild_polygon(segs, cfg):
             s_proj = float(u_dir @ seg.p1)
             A = s_proj * u_dir + prev.d * prev.n        # prev 的新终点
             B = s_proj * u_dir + seg.d * seg.n          # seg 的新起点
-            # 只在小位移差时合并（两端点几乎重合，合并误差可忽略）；
-            # 其余情况建断阶——端点 A/B 分别严格落在各自直线上，几何合法。
+            # 断阶规则：
+            #   位移差 < 0.25nm → 合并（两端点几乎重合）；
+            #   位移差 > MAX_JOG_NM → 也合并（平滑）：过大的断阶在掩模上
+            #     形成扎眼的台阶，并在台阶处产生纤细的连接/碎块；
+            #   其余 → 保留小断阶（端点 A/B 严格落在各自直线上，几何合法）。
             # （早期实现为避免折返而在切口邻域强制合并，会把端点放到
             #   中线上、偏离各自直线，逐轮累积成斜边，已废弃。）
-            if np.linalg.norm(A - B) < 0.25:
+            gap = float(np.linalg.norm(A - B))
+            if gap < 0.25 or gap > getattr(cfg, "MAX_JOG_NM", 8.0):
                 # 合并：取两条新直线的中位线，并**同步更新两段的 d**。
                 # 只挪端点不更新 d 会让端点偏离各自直线，逐轮累积成
                 # 斜边（掩模扭曲）。更新 d 后两段严格共线，几何一致。
