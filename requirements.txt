@@ -1,0 +1,14 @@
+# 迭代法 OPC 模型 —— 运行依赖
+# 安装： pip install -r requirements.txt
+# 已在 Python 3.14 + 下列版本验证通过（Python >= 3.8 均可）
+
+# ---- 必需 ----
+numpy>=1.23         # FFT 前向模型、数值计算
+scipy>=1.10         # ndimage：插值(map_coordinates)、高斯模糊、连通域
+matplotlib>=3.7     # 可视化输出
+opencv-python>=4.8  # 光栅化(fillPoly)、轮廓提取(findContours)、形态学
+shapely>=2.0        # 多边形布尔运算、几何有效性检查、轮廓偏差评估
+
+# ---- 可选（缺少时对应功能自动跳过） ----
+imageio>=2.31       # config.SAVE_GIF=True 时导出迭代动画
+gdstk>=0.9          # 导出 final_mask.gds（版图软件可读）

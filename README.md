@@ -1,6 +1,6 @@
 # 迭代法 OPC 模型（Hopkins 前向 + 边缘/角落移动）
 
-一个自研的**迭代法光学邻近效应修正（OPC）**教学/科研演示模型：
+一个简单的**迭代法光学邻近效应修正（OPC）** demo：
 
 - **输入**：像素化版图（内置 6 种参数化示例图形，或从 `.txt`/`.png` 读取自定义 0/1 矩阵）
 - **前向模型**：Hopkins 部分相干成像模型，用 numpy 数值实现（Abbe 光源点采样法，与 Hopkins 方程数学上严格等价），固定阈值光刻胶模型
@@ -10,14 +10,16 @@
 ## 快速开始
 
 ```bash
-conda activate litho_sim      # 需要 numpy/scipy/matplotlib/opencv-python/shapely
+conda activate litho_sim                # 或任何 Python >= 3.8 环境
+pip install -r requirements.txt         # 安装依赖（必需 5 项 + 可选 2 项）
 cd D:\Sync\project\diffusion4ilt\iterative_opc
-python main.py              # 跑默认示例（肘形阵列，周期 + 角点）
-python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
+python main.py              # 跑默认示例（细 L 形线条阵列，周期 + 角点）
+python main.py --selftest   # 先跑光学模型 6 项物理自检，再跑 OPC
 ```
 
-> 环境说明：早期版本用 `slitho_api` 环境，其中的科学计算包已不存在；
-> 目前的可用环境是 `litho_sim`（需 `pip install opencv-python shapely imageio`）。
+> 依赖：`numpy / scipy / matplotlib / opencv-python / shapely`（必需）；
+> `imageio`（导出 GIF）、`gdstk`（导出 GDS）为可选，缺少时对应功能自动跳过。
+> 早期版本用的 `slitho_api` 环境里科学计算包已不存在，现用 `litho_sim`。
 
 输出在 `output/` 目录：
 - `summary.png` —— 最终总览图（目标 / 掩模 / 空间像 / 印刷轮廓对比 / EPE 图 / 收敛曲线）
