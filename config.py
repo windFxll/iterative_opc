@@ -116,22 +116,24 @@ SAVE_GIF = False        # 迭代动画（需要 imageio，环境里已装）
 # 注意：孤立图形线宽不宜小于 ~55nm（193nm/1.35、阈值0.3 时
 # 孤立 45nm 线处于印刷极限：中心光强 ≈0.26~0.30，勉强/不能印刷）。
 # 总跨度（含修正量 ~30nm）不要超过视场 896nm，留足边界裕量。
-# 肘形阵列：条数、线宽、臂长、周期（中心距）。
+# 肘形阵列（默认示例）：条数、线宽、臂长、周期（中心距）
+# 线宽 120nm（k1≈0.84）——细线条、典型的 OPC 演示尺寸，角点圆化与
+# 线端回缩都明显。
 # 约束1：臂长要明显大于线宽，否则 L 形退化成"带缺口的方块"；
-# 约束2：间距 = 周期 − 臂长 需 ≥100nm（过小会印粘连）；
-# 约束3：跨度 = 周期×(n-1) + 臂长 ≤ 视场 896nm
-ELBOW_N, ELBOW_W, ELBOW_ARM, ELBOW_PITCH = 2, 200.0, 280.0, 400.0
+# 约束2：间距 = 周期 − 臂长 需 ≥120nm（过小会印粘连）；
+# 约束3：跨度（含修正量）≤ 视场 896nm，四周留 ≥40nm 裕量
+ELBOW_N, ELBOW_W, ELBOW_ARM, ELBOW_PITCH = 2, 120.0, 320.0, 460.0
 # 密集线条：条数、线宽、周期（pitch = 线宽 + 间距）
-LINES_N, LINES_W, LINES_PITCH = 3, 200.0, 300.0
+LINES_N, LINES_W, LINES_PITCH = 3, 120.0, 300.0
 # 线端阵列：条数、线宽、周期、中间线半长（中间线线端回缩）
-LEA_N, LEA_W, LEA_PITCH, LEA_MID_HALF = 3, 200.0, 300.0, 150.0
+LEA_N, LEA_W, LEA_PITCH, LEA_MID_HALF = 3, 120.0, 300.0, 150.0
 # 接触孔阵列：n×n 个、边长、周期
 CONT_N, CONT_SIZE, CONT_PITCH = 2, 200.0, 320.0
 # L 形：两臂长 L_ARM、线宽 L_WIDTH（臂长必须明显大于线宽）
-L_ARM_NM, L_WIDTH_NM = 360.0, 200.0
+L_ARM_NM, L_WIDTH_NM = 320.0, 120.0
 # T 形：横梁长 T_BAR、竖杆长 T_STEM、线宽 T_WIDTH
-T_BAR_NM, T_STEM_NM, T_WIDTH_NM = 460.0, 300.0, 200.0
+T_BAR_NM, T_STEM_NM, T_WIDTH_NM = 400.0, 260.0, 120.0
 # 线端间隙：线长、线宽、间隙（间隙太小会印粘连，100nm 左右合适）
-GAP_LEN, GAP_W, GAP = 200.0, 200.0, 100.0
+GAP_LEN, GAP_W, GAP = 200.0, 120.0, 100.0
 # 孤立线：线宽、线长
-ISO_W, ISO_LEN = 200.0, 400.0
+ISO_W, ISO_LEN = 120.0, 400.0

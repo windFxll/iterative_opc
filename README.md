@@ -40,16 +40,16 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 | [7] 输出 | 输出目录、逐帧/动画开关 | `SAVE_GIF=True` 生成 opc.gif |
 | [8] 图形几何 | 各示例图形的尺寸（nm） | 换图形尺寸 |
 
-**示例图形**（默认特征尺寸 200nm，k₁≈1.4，以周期图案为主）：
+**示例图形**（线宽 120nm，k₁≈0.84，以周期图案为主）：
 
 | DEMO_NAME | 图案 | 看点 |
 |---|---|---|
-| `elbow_array` ★默认 | 2 根周期排列的 L 折线（周期 350nm） | 周期环境 + 每根 4 凸角 1 凹角 |
-| `dense_lines` | 3 条 200nm 线、周期 280nm | 密集线条边缘位移 |
+| `elbow_array` ★默认 | 2 根细 L 折线（线宽 120nm、臂长 320nm、周期 460nm） | 周期环境 + 每根 4 凸角 1 凹角 |
+| `dense_lines` | 3 条 120nm 线、周期 300nm | 密集线条边缘位移 |
 | `line_end_array` | 3 条周期线，中间线线端回缩 | 线端在周期环境中的修正 |
 | `contact_array` | 2×2 接触孔（200nm，周期 320nm） | 二维周期、每孔 4 角 |
-| `l_shape` / `t_shape` | 单个 L / T 形 | 凸角 serif、凹角 hammerhead |
-| `line_end_gap` / `isolated_line` | 线端间隙 / 孤立线 | 与周期图案对比邻近效应 |
+| `l_shape` / `t_shape` | 单个细 L / T 形（线宽 120nm） | 凸角 serif、凹角 hammerhead |
+| `line_end_gap` / `isolated_line` | 线端间隙 / 孤立线（线宽 120nm） | 与周期图案对比邻近效应 |
 
 **入门顺序建议**：`elbow_array`（周期+角点）→ `dense_lines`（纯边缘）→ `contact_array`（二维周期）→ `line_end_array`（线端）。
 
@@ -83,18 +83,18 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 ## 预期结果
 
 默认参数（λ=193nm, NA=1.35, 环形 0.6~0.9, 阈值 0.3, 2nm 像素, GRID_N=448,
-200nm 特征, 阻尼 0.85）下各示例的**印刷轮廓对称平均偏差**（初始 → 输出）：
+线宽 120nm, 阻尼 0.85）下各示例的**印刷轮廓对称平均偏差**（初始 → 输出）：
 
 | 示例 | 初始 | OPC 后 |
 |---|---|---|
-| elbow_array | 8.8 nm | 2.0 nm |
-| dense_lines | 6.6 nm | 2.0 nm |
-| line_end_array | 6.6 nm | 2.0 nm |
-| contact_array | 12.5 nm | 1.9 nm |
-| l_shape | 8.8 nm | 1.8 nm |
-| t_shape | 8.6 nm | 1.6 nm |
-| line_end_gap | 11.6 nm | 1.7 nm |
-| isolated_line | 10.5 nm | 1.5 nm |
+| elbow_array | 11.0 nm | 1.7 nm |
+| dense_lines | 13.5 nm | 1.4 nm |
+| line_end_array | 13.6 nm | 1.4 nm |
+| contact_array | 11.7 nm | 1.7 nm |
+| l_shape | 10.3 nm | 1.8 nm |
+| t_shape | 10.0 nm | 1.9 nm |
+| line_end_gap | 14.9 nm | 1.7 nm |
+| isolated_line | 13.6 nm | 1.1 nm |
 
 掩模形态符合经典 OPC 规范：边缘偏置约 ±15nm（上限 `MAX_BIAS_NM=25`），
 凸角外扩**方块 serif**（肘形阵列约 18nm），凹角**方形缺口 hammerhead**，
