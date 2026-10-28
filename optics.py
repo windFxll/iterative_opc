@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-optics.py —— Hopkins 部分相干成像前向模型（自研数值实现）。
+optics.py —— Hopkins 部分相干成像前向模型。
 
 物理模型
 --------

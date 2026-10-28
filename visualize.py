@@ -33,12 +33,29 @@ C_RMS = "#0072B2"         # rms 曲线（蓝）
 C_MAX = "#D55E00"         # max|EPE| 曲线（朱红）
 
 
-def setup_style():
-    """全局绘图样式（中文显示 + 负号）。在模块导入时调用一次。"""
+def setup_style(cfg=None):
+    """全局绘图样式（中文显示 + 负号）。在 main 里调用一次。
+
+    输出图片尺寸由 config 的 FIG_SIZE_INCH（英寸）与 FIG_DPI（分辨率）
+    决定：像素尺寸 ≈ FIG_SIZE_INCH × FIG_DPI。
+    """
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
     plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["figure.dpi"] = 120
+    plt.rcParams["figure.dpi"] = float(getattr(cfg, "FIG_DPI", 200))
     plt.rcParams["axes.grid"] = False
+    # 画布放大后字号按同一比例放大，保持文字与图形的相对比例
+    # （rcParams 里部分字号是 'medium'/'large' 这样的字符串，不能直接相乘，
+    #   这里显式给定数值）
+    size = getattr(cfg, "FIG_SIZE_INCH", (20.0, 16.0))
+    base = 10.0 * float(size[0]) / 16.0
+    plt.rcParams.update({
+        "font.size": base,
+        "axes.titlesize": base * 1.2,
+        "axes.labelsize": base,
+        "xtick.labelsize": base * 0.9,
+        "ytick.labelsize": base * 0.9,
+        "legend.fontsize": base * 0.9,
+    })
 
 
 def _limits(cfg):
@@ -87,7 +104,7 @@ def _draw_overview(outdir, fname, title, target, target_polys, mask, aerial,
     """画一张完整的 3×3 总览图并存盘。"""
     xmin, xmax, ymin, ymax = _limits(cfg)
 
-    fig = plt.figure(figsize=(16, 13))
+    fig = plt.figure(figsize=getattr(cfg, "FIG_SIZE_INCH", (20.0, 16.0)))
     gs = fig.add_gridspec(3, 3, height_ratios=[1, 1, 0.72],
                           hspace=0.32, wspace=0.30)
 

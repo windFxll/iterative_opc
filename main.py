@@ -2,8 +2,8 @@
 """
 main.py —— 迭代法 OPC 模型入口。
 
-用法（在 slitho_api 环境里）:
-    conda activate slitho_api
+用法:
+    conda activate env
     python main.py            # 跑默认示例（config.py 里 DEMO_NAME 指定的图形）
     python main.py --selftest # 先跑光学模型自检（5 项物理检查），再跑 OPC
 
@@ -24,7 +24,7 @@ from visualize import setup_style, save_summary
 
 
 def main():
-    setup_style()
+    setup_style(config)
     os.makedirs(config.OUT_DIR, exist_ok=True)
 
     # ---- 可选：光学模型自检 ----

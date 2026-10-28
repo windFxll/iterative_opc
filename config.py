@@ -21,7 +21,7 @@ config.py —— 全部可调参数集中在这个文件里。
 #   'line_end_gap'   线端间隙（看线端回缩修正）
 #   'isolated_line'  孤立线条（与密集线条对比邻近效应）
 #   'custom'         读取自定义版图文件
-DEMO_NAME = "elbow_array"
+DEMO_NAME = "contact_array"
 
 # DEMO_NAME='custom' 时读取的文件：0/1 文本矩阵（空格/逗号分隔）或灰度 PNG
 CUSTOM_MASK_FILE = "input_mask.txt"
@@ -107,6 +107,13 @@ MIN_SPACE_NM = 20.0     # 设计规则：最小间距 (nm)
 OUT_DIR = "output"      # 输出目录（相对项目根目录）
 SAVE_FRAMES = True      # 每次迭代保存一帧总览图 iter_%03d.png
 SAVE_GIF = False        # 迭代动画（需要 imageio，环境里已装）
+
+# 图片尺寸 ———— 改这里：输出 PNG 的大小
+# 输出像素 ≈ FIG_SIZE_INCH × FIG_DPI。默认 20×16 英寸 @200dpi ≈ 4000×3200
+# 像素（原 16×13 @120dpi ≈ 1650×1435）。只想要更清晰：调大 FIG_DPI；
+# 想整体放大排版：调大 FIG_SIZE_INCH。
+FIG_SIZE_INCH = (20.0, 16.0)
+FIG_DPI = 200
 
 # ============================================================
 # [8] 示例图形几何参数（每个示例一组，单位 nm）
