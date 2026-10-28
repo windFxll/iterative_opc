@@ -53,16 +53,32 @@ from scipy import ndimage
 # 光源与光瞳预计算
 # ------------------------------------------------------------------
 
+def _n_fft(cfg):
+    """FFT 网格尺寸。周期边界模式 = GRID_N（视场即一个周期）；
+    孤立边界模式 = 2×GRID_N（零填充后取中心，模拟线性卷积、无环绕）。"""
+    if getattr(cfg, "BOUNDARY_MODE", "periodic") == "isolated":
+        return 2 * cfg.GRID_N
+    return cfg.GRID_N
+
+
 def precompute_source_and_pupil(cfg):
     """采样光源、构建每个光源点对应的光瞳数组。只与光学参数有关，
     与掩模无关，整个 OPC 迭代过程只需调用一次。
 
+    边界条件（重要）：
+      周期边界 'periodic'（默认）——视场就是版图的一个周期，FFT 的
+        循环卷积天然给出周期边界；周期版图的谱只含离散谐波，光瞳仅在
+        这些谐波上取值，因此该实现对周期模型是**精确**的（无光瞳采样误差）。
+      孤立边界 'isolated'——把掩模零填充到 2N 再做 FFT（线性卷积），
+        结果取中心 N×N，消除相邻周期串扰；代价是 4 倍 FFT 时间。
+
     返回 dict:
       weights : 光源点权重 w_s（已归一化 Σw=1）
-      pupils  : 每个光源点一张 (N,N) 复数光瞳数组 P(f+f_s)（自然序频率网格）
+      pupils  : 每个光源点一张 (n_fft,n_fft) 复数光瞳数组 P(f+f_s)（自然序）
       i_clear : 开域强度解析值（空掩模的空间像 = 1，用于归一化）
+      n_fft   : FFT 网格尺寸
     """
-    N, dx = cfg.GRID_N, cfg.PIXEL_SIZE_NM
+    N, dx = _n_fft(cfg), cfg.PIXEL_SIZE_NM
     lam, na = cfg.WAVELENGTH_NM, cfg.NA
     fc = na / lam                       # 光瞳截断频率 = NA/λ (nm⁻¹)
 
@@ -107,7 +123,8 @@ def precompute_source_and_pupil(cfg):
     #      模 1），因此 i_clear = Σw = 1；仍显式计算以保持代码普适 ----
     i_clear = float(sum(w * abs(P[0, 0]) ** 2 for w, P in zip(weights, pupils)))
 
-    return {"weights": weights, "pupils": pupils, "i_clear": i_clear}
+    return {"weights": weights, "pupils": pupils, "i_clear": i_clear,
+            "n_fft": N}
 
 
 # ------------------------------------------------------------------
@@ -117,6 +134,11 @@ def precompute_source_and_pupil(cfg):
 def aerial_image(mask, cfg, precomp):
     """计算归一化空间像 I(x)（开域 = 1）。
 
+    边界条件：
+      周期（默认）：掩模直接做 FFT，视场即一个周期——循环卷积给出严格的
+        周期边界，相邻周期之间没有间隙、没有零填充。
+      孤立：掩模零填充到 2N 后计算，再裁中心 N×N（线性卷积，无环绕）。
+
     参数:
       mask     : 像素版图（1=不透明图形），shape (N,N)
       precomp  : precompute_source_and_pupil 的返回值
@@ -124,25 +146,44 @@ def aerial_image(mask, cfg, precomp):
       归一化空间像 (N,N) float64，物理含义为相对开域强度的剂量分布
     """
     N = cfg.GRID_N
+    n_fft = precomp.get("n_fft", _n_fft(cfg))
     # 透射场：不透明处为 0、背景为 1（亮场暗图形约定）
     T = 1.0 - mask.astype(np.float64)
+    if n_fft != N:
+        # 孤立边界：把视场外填充为"清晰场"（透射 T=1，即该区域无图形），
+        # 这样既没有对面周期的串扰，也不会在视场边缘引入虚假的暗区
+        pad = n_fft - N
+        T = np.pad(T, ((pad // 2, pad - pad // 2),
+                       (pad // 2, pad - pad // 2)),
+                   mode="constant", constant_values=1.0)
     # FFT 三件套之一：ifftshift 把图像中心（原点）移到数组 [0,0] 角
     M = np.fft.fft2(np.fft.ifftshift(T))
 
-    I = np.zeros((N, N), dtype=np.float64)
+    I = np.zeros((n_fft, n_fft), dtype=np.float64)
     for w_s, P_s in zip(precomp["weights"], precomp["pupils"]):
         # ifft2 自带 1/N² 归一化；fftshift 把原点移回图像中心
         E_s = np.fft.fftshift(np.fft.ifft2(M * P_s))
         I += w_s * np.abs(E_s) ** 2
+    if n_fft != N:
+        # 裁掉填充区，回到 GRID_N 视场
+        c0 = (n_fft - N) // 2
+        I = I[c0:c0 + N, c0:c0 + N]
     return I / precomp["i_clear"]       # 开域归一化（阈值才有剂量含义）
 
 
 def apply_resist_blur(aerial, cfg):
-    """可选：光刻胶内扩散的高斯模糊（σ 单位 nm，自动换算成像素）。"""
+    """可选：光刻胶内扩散的高斯模糊（σ 单位 nm，自动换算成像素）。
+
+    边界模式必须与前向模型一致：周期边界用 'wrap'（环绕），
+    孤立边界用 'nearest'。用默认的 'reflect' 会破坏周期性
+    （镜像边界会把视场边缘的像反射回来）。
+    """
     if cfg.RESIST_BLUR_SIGMA_NM <= 0:
         return aerial
     sigma_px = cfg.RESIST_BLUR_SIGMA_NM / cfg.PIXEL_SIZE_NM
-    return ndimage.gaussian_filter(aerial, sigma=sigma_px)
+    mode = "wrap" if getattr(cfg, "BOUNDARY_MODE", "periodic") == "periodic" \
+        else "nearest"
+    return ndimage.gaussian_filter(aerial, sigma=sigma_px, mode=mode)
 
 
 def forward(mask, cfg, precomp):
@@ -254,6 +295,36 @@ def self_check(cfg):
     report("离焦物理", sym_ok and slope_ok,
            "I(+z)=I(−z) 误差 %.1e；斜率 %.4f → %.4f"
            % (np.max(np.abs(Ip - Im)), grad0, gradz))
+
+    # ---- 检查 6：周期边界条件 ----
+    # 判据：把掩模在视场内循环平移 (dy,dx)，空间像必须精确跟着平移。
+    # 只有周期边界才满足这一点（孤立/零填充边界在视场边缘会不同）。
+    if getattr(cfg, "BOUNDARY_MODE", "periodic") == "periodic":
+        mask = polygons_to_pixels(
+            [np.array([[-150.0, -100.0], [50.0, -100.0],
+                       [50.0, 60.0], [-150.0, 60.0]]),
+             np.array([[150.0, 100.0], [260.0, 100.0],
+                       [260.0, 160.0], [150.0, 160.0]])],
+            N, cfg.PIXEL_SIZE_NM, wrap=True)
+        shift = (N // 4, -N // 5)      # 行、列方向的循环平移（像素）
+        I_a = aerial_image(mask, cfg, pre)
+        I_b = aerial_image(np.roll(mask, shift, axis=(0, 1)), cfg, pre)
+        err = np.max(np.abs(I_a - np.roll(I_b, (-shift[0], -shift[1]),
+                                         axis=(0, 1))))
+        # 跨越视场边界的线条：上边缘的图形应环绕到下边缘，像连续无缝
+        half_line = [np.array([[-40.0, N * cfg.PIXEL_SIZE_NM / 2 - 60.0],
+                               [40.0, N * cfg.PIXEL_SIZE_NM / 2 - 60.0],
+                               [40.0, N * cfg.PIXEL_SIZE_NM / 2 + 60.0],
+                               [-40.0, N * cfg.PIXEL_SIZE_NM / 2 + 60.0]])]
+        mask_wrap = polygons_to_pixels(half_line, N, cfg.PIXEL_SIZE_NM,
+                                       wrap=True)
+        I_w = aerial_image(mask_wrap, cfg, pre)
+        row_top = I_w[2, :]          # 紧邻上边界
+        row_bot = I_w[-3, :]         # 紧邻下边界（同一图形环绕后的部分）
+        wrap_ok = np.max(np.abs(row_top - row_bot)) < 0.05
+        report("周期边界条件", err < 1e-9 and wrap_ok,
+               "循环平移不变性误差 %.1e；跨界图形上下边缘像差 %.3f"
+               % (err, np.max(np.abs(row_top - row_bot))))
 
     print("自检结果: %d/%d PASS" % (sum(ok for _, ok, _ in results), len(results)))
     return all(ok for _, ok, _ in results)

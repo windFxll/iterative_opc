@@ -59,6 +59,11 @@ class Segment:
         return float(np.linalg.norm(self.p2 - self.p1))
 
 
+def _periodic(cfg):
+    """当前是否是周期边界模式（光栅化与 EPE 插值都要与之保持一致）。"""
+    return getattr(cfg, "BOUNDARY_MODE", "periodic") == "periodic"
+
+
 def _all_segs(polys):
     """把所有多边形的段按固定顺序摊平（EPE/移动共用同一顺序）。"""
     out = []
@@ -275,7 +280,11 @@ def _find_crossing(aerial, p, n, cfg):
     # map_coordinates 的坐标顺序是 (行=y, 列=x)，与物理 (x,y) 相反
     coords = np.stack([(pts[:, 1] / dx + N / 2 - 0.5),   # 行 i
                        (pts[:, 0] / dx + N / 2 - 0.5)], axis=0)  # 列 j
-    I = ndimage.map_coordinates(aerial, coords, order=1, mode="nearest")
+    # 插值边界模式与前向模型一致：周期边界用 'wrap'（紧贴视场边缘的
+    # 采样也按周期取邻域），孤立边界用 'nearest'
+    I = ndimage.map_coordinates(
+        aerial, coords, order=1,
+        mode="wrap" if _periodic(cfg) else "nearest")
     s = I - cfg.RESIST_THRESHOLD
     changes = np.where(np.diff(np.sign(s)) != 0)[0]
     if len(changes) == 0:
@@ -809,7 +818,8 @@ def run_opc(target_pixels, target_polys, cfg):
     polys = init_polygons(target_polys, cfg)        # 含 serif 种子的段状态
     mask = polygons_to_pixels([np.array([s.p1 for s in poly])
                                for poly in polys],
-                              cfg.GRID_N, cfg.PIXEL_SIZE_NM)
+                              cfg.GRID_N, cfg.PIXEL_SIZE_NM,
+                              wrap=_periodic(cfg))
     history = []        # (rms, max|EPE|) 每轮一条
     best_dev, no_improve = np.inf, 0
     best_state = None   # 历史最佳状态（角点区域可能来回振荡，返回最佳）
@@ -852,7 +862,8 @@ def run_opc(target_pixels, target_polys, cfg):
         polys = apply_moves(polys, cfg)
         mask = polygons_to_pixels([np.array([s.p1 for s in poly])
                                    for poly in polys],
-                                  cfg.GRID_N, cfg.PIXEL_SIZE_NM)
+                                  cfg.GRID_N, cfg.PIXEL_SIZE_NM,
+                                  wrap=_periodic(cfg))
 
         # ---- 像素辅助操作 + 设计规则报告 ----
         # 清理只处理小碎屑（≤3px 的岛/洞，来自断阶/小切口光栅化的

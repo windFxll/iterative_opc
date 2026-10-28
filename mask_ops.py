@@ -57,21 +57,29 @@ def vertex_y_of_i(i, grid_n, dx):
 # 光栅化：多边形 → 像素
 # ------------------------------------------------------------------
 
-def polygons_to_pixels(polygons_nm, grid_n, dx):
+def polygons_to_pixels(polygons_nm, grid_n, dx, wrap=False):
     """把多边形列表（nm 坐标）光栅化成像素数组（1=图形）。
 
     用 OpenCV fillPoly 填充。注意 OpenCV 的图像约定：
     像素坐标为 (列, 行) 即 (x, y) 的交换，行对应物理 y、列对应物理 x。
+
+    wrap=True：周期边界模式——跨出视场的部分按 ±grid_n 平移后重复绘制，
+    使跨越边界的图形自动环绕到对面（与 FFT 的周期边界一致）。
     """
-    pts_list = []
+    canvas = np.zeros((grid_n, grid_n), np.uint8)
+    if not polygons_nm:
+        return canvas
+    shifts = ((-grid_n, 0, grid_n) if wrap else (0,))
     for poly in polygons_nm:
         col = j_of_x(poly[:, 0], grid_n, dx)   # x → 列（像素中心坐标系）
         row = i_of_y(poly[:, 1], grid_n, dx)   # y → 行
-        pts = np.stack([col, row], axis=-1).astype(np.float32)
-        pts_list.append(np.round(pts).astype(np.int32).reshape(-1, 1, 2))
-    canvas = np.zeros((grid_n, grid_n), np.uint8)
-    if pts_list:
-        cv2.fillPoly(canvas, pts_list, 1)
+        base = np.stack([col, row], axis=-1)
+        for sx in shifts:
+            for sy in shifts:
+                pts = (base + np.array([sx, sy], dtype=float)).astype(np.float32)
+                cv2.fillPoly(canvas,
+                             [np.round(pts).astype(np.int32).reshape(-1, 1, 2)],
+                             1)
     return canvas
 
 
