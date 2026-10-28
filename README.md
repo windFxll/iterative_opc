@@ -80,18 +80,18 @@ python main.py --selftest   # 先跑光学模型 5 项物理自检，再跑 OPC
 
 | 示例 | 初始 | OPC 后 |
 |---|---|---|
-| elbow_array | 10.4 nm | 2.9 nm |
-| dense_lines | 6.6 nm | 2.4 nm |
-| line_end_array | 6.6 nm | 2.3 nm |
+| elbow_array | 8.8 nm | 2.0 nm |
+| dense_lines | 6.6 nm | 2.0 nm |
+| line_end_array | 6.6 nm | 2.0 nm |
 | contact_array | 12.5 nm | 1.9 nm |
-| l_shape | 8.8 nm | 2.4 nm |
-| t_shape | 8.6 nm | 2.1 nm |
-| line_end_gap | 10.1 nm | 1.9 nm |
-| isolated_line | 10.5 nm | 1.8 nm |
+| l_shape | 8.8 nm | 1.8 nm |
+| t_shape | 8.6 nm | 1.6 nm |
+| line_end_gap | 11.6 nm | 1.7 nm |
+| isolated_line | 10.5 nm | 1.5 nm |
 
-掩模形态符合经典 OPC 规范：边缘偏置约 −12~+15nm，凸角外扩**方块 serif**
-（肘形阵列约 18nm），凹角**方形缺口 hammerhead**，掩模面积约为目标的
-1.13 倍（肘形阵列）。
+掩模形态符合经典 OPC 规范：边缘偏置约 ±15nm（上限 `MAX_BIAS_NM=25`），
+凸角外扩**方块 serif**（肘形阵列约 18nm），凹角**方形缺口 hammerhead**，
+掩模面积约为目标的 1.1 倍。
 
 **历史最佳状态判据**：迭代中角点区可能出现过冲振荡，程序记录每轮的
 "印刷轮廓与目标的对称平均偏差"，输出偏差最小的一轮（而不是末轮），

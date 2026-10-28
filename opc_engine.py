@@ -287,6 +287,17 @@ def _find_crossing(aerial, p, n, cfg):
     return float(ts[k] + f * (ts[k + 1] - ts[k]))
 
 
+def _adjacent_to_cut(poly, i, step):
+    """段 i 沿链方向 step 的第一段（跳过断阶）是否为切口。"""
+    n_seg = len(poly)
+    k = (i + step) % n_seg
+    guard = 0
+    while poly[k].is_jog and guard < n_seg:
+        k = (k + step) % n_seg
+        guard += 1
+    return poly[k].is_cut
+
+
 def _corner_epe(poly, i, aerial, cfg):
     """沿角平分线测量角点 EPE（方形 serif/hammerhead 的正确度量）。
 
@@ -347,19 +358,38 @@ def compute_epe(polys, aerial, cfg):
             if L < 1e-6:
                 seg_epes.append(0.0)      # 退化段（零长度）不采样，防除零
                 continue
-            # 采样点：均匀分布，两端避让角点（避让量不超过半段长）
-            ex = min(cfg.CORNER_EXCLUSION_NM, L / 4)
-            K = max(1, int(round(L / cfg.PIXEL_SIZE_NM)))
-            ts = np.linspace(ex, L - ex, K) if K > 1 else np.array([L / 2])
+            # 采样点：两端避让角点。若该端紧邻切口（serif/hammerhead），
+            # 避让量加大——角点圆化区（~20nm）由切口负责修正，边缘反馈
+            # 在那里会读到很大的假偏差、把边推出去（偏置失控）。
+            ex_s = ex_e = min(cfg.CORNER_EXCLUSION_NM, L / 4)
+            if _adjacent_to_cut(poly, i, -1):
+                ex_s = min(max(cfg.CORNER_EXCLUSION_NM, 20.0), L / 3.0)
+            if _adjacent_to_cut(poly, i, +1):
+                ex_e = min(max(cfg.CORNER_EXCLUSION_NM, 20.0), L / 3.0)
+            K = max(1, int(round((L - ex_s - ex_e) / cfg.PIXEL_SIZE_NM)))
+            if K > 1 and L - ex_s - ex_e > 1e-6:
+                ts = np.linspace(ex_s, L - ex_e, K)
+            else:
+                ts = np.array([L / 2])    # 段太短：退化到中点单采样
             dvec = (seg.p2 - seg.p1) / L
             epe_k = []
             for t in ts:
                 p = seg.p1 + t * dvec
-                t_cross = _find_crossing(aerial, p, seg.n, cfg)
-                # EPE = 印刷轮廓位置在法向上的投影 − 目标参考线
-                epe_k.append(float((p + t_cross * seg.n) @ seg.n - seg.d_ref))
-            seg_epes.append(float(np.median(epe_k)))
-            epe_all.extend(epe_k)
+                # 扫描起点取"目标参考线上"的对应点，而不是掩模边上的点：
+                # 掩模边被偏置后可能离印刷轮廓很远（甚至扫不到交点），
+                # 以目标线为中心搜索 ±EPE_SEARCH 更稳健；交点距离直接
+                # 就是相对目标线的 EPE
+                off = float(p @ seg.n - seg.d_ref)
+                p_ref = p - off * seg.n
+                epe_k.append(_find_crossing(aerial, p_ref, seg.n, cfg))
+            # 测量有效性：封顶值意味着搜索范围内找不到阈值交点
+            # （角点圆化区的短边常见），属于"无测量"，不参与反馈和统计
+            valid = [v for v in epe_k if abs(v) < 0.9 * cfg.EPE_SEARCH_NM]
+            if valid:
+                seg_epes.append(float(np.median(valid)))
+                epe_all.extend(valid)
+            else:
+                seg_epes.append(0.0)
     return seg_epes, epe_all
 
 
@@ -597,15 +627,27 @@ def _rebuild_polygon(segs, cfg):
             else:
                 pt = _line_intersection(prev.n, prev.d, seg.n, seg.d)
         elif abs(cross2(prev.n, seg.n)) < PARALLEL_TOL:
-            # 共线碎片：位移不同则用断阶连接（两点在过旧顶点的垂线上）
-            V_old = seg.p1
-            A = V_old + prev.prev_move * prev.n      # prev 的新终点
-            B = V_old + seg.prev_move * seg.n        # seg 的新起点
-            # 切口邻域不建断阶：断阶与切口锚定几何相互作用会折叠链序。
-            # 改为合并（取平均位移，牺牲一点局部自由度换几何稳定）。
-            near_cut = (segs[(i - 2) % n].is_cut or segs[(i + 1) % n].is_cut)
-            if np.linalg.norm(A - B) < 0.25 or near_cut:
-                pt = 0.5 * (A + B)                   # 合并
+            # 共线碎片：位移不同则用断阶连接。
+            # 关键：端点必须精确落在各自的新直线上——用旧共享顶点在
+            # 边方向上的坐标 s 投影到两条新直线，得到 A（prev 线）与
+            # B（seg 线）。若像早期实现那样"旧顶点 + 位移·法向"，
+            # 端点会逐渐偏离自身直线，逐轮累积成斜边（掩模扭曲）。
+            u_dir = np.array([-prev.n[1], prev.n[0]])   # 沿边方向
+            s_proj = float(u_dir @ seg.p1)
+            A = s_proj * u_dir + prev.d * prev.n        # prev 的新终点
+            B = s_proj * u_dir + seg.d * seg.n          # seg 的新起点
+            # 只在小位移差时合并（两端点几乎重合，合并误差可忽略）；
+            # 其余情况建断阶——端点 A/B 分别严格落在各自直线上，几何合法。
+            # （早期实现为避免折返而在切口邻域强制合并，会把端点放到
+            #   中线上、偏离各自直线，逐轮累积成斜边，已废弃。）
+            if np.linalg.norm(A - B) < 0.25:
+                # 合并：取两条新直线的中位线，并**同步更新两段的 d**。
+                # 只挪端点不更新 d 会让端点偏离各自直线，逐轮累积成
+                # 斜边（掩模扭曲）。更新 d 后两段严格共线，几何一致。
+                d_mid = 0.5 * (prev.d + seg.d)
+                prev.d = seg.d = d_mid
+                A = s_proj * u_dir + d_mid * prev.n
+                pt = A
             else:
                 jogs[i - 1] = (A, B)
                 pt = None
