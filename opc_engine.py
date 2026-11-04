@@ -864,6 +864,11 @@ def run_opc(target_pixels, target_polys, cfg):
     from visualize import save_frame
 
     pre = precompute_source_and_pupil(cfg)          # 光源/光瞳只算一次
+    src = pre["source"]
+    print("光源: %s, %d 个采样点%s"
+          % (src["kind"], len(src["weights"]),
+             "" if pre["pupil_cached"] else
+             "（点数超过光瞳缓存，前向按需构建）"))
     polys = init_polygons(target_polys, cfg)        # 含 serif 种子的段状态
     mask = polygons_to_pixels([np.array([s.p1 for s in poly])
                                for poly in polys],

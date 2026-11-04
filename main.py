@@ -40,9 +40,20 @@ def main():
     print("目标图形: %d 个多边形, %d 个像素 (视场 %.0f nm, 像素 %.1f nm)"
           % (len(target_polys), int(target_pixels.sum()),
              config.GRID_N * config.PIXEL_SIZE_NM, config.PIXEL_SIZE_NM))
-    print("光刻参数: λ=%.0f nm, NA=%.2f, %s 照明 σ=%.1f~%.1f, 阈值 %.2f%s"
-          % (config.WAVELENGTH_NM, config.NA, config.ILLUM_TYPE,
-             config.SIGMA_IN, config.SIGMA_OUT, config.RESIST_THRESHOLD,
+    illum_type = str(config.ILLUM_TYPE).lower()
+    if illum_type in ("annular", "circle"):
+        sig_in = 0.0 if illum_type == "circle" else config.SIGMA_IN
+        illum_desc = "%s 照明 σ=%.2f~%.2f" % (illum_type,
+                                              sig_in, config.SIGMA_OUT)
+    elif illum_type in ("dipole", "quadrupole"):
+        illum_desc = ("%s 照明 σ_c=%.2f, r=%.2f, θ=%.1f°"
+                      % (illum_type, config.POLE_SIGMA,
+                         config.POLE_RADIUS, config.POLE_ANGLE_DEG))
+    else:
+        illum_desc = "%s 照明" % illum_type
+    print("光刻参数: λ=%.0f nm, NA=%.2f, %s, 阈值 %.2f%s"
+          % (config.WAVELENGTH_NM, config.NA, illum_desc,
+             config.RESIST_THRESHOLD,
              ", 离焦 %.0f nm" % config.DEFOCUS_NM
              if config.DEFOCUS_NM else ""))
 
