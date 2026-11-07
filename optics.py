@@ -295,8 +295,35 @@ def sample_source(cfg):
 
 
 # ------------------------------------------------------------------
-# 光瞳预计算
+# 成像模型选择与光瞳预计算
 # ------------------------------------------------------------------
+
+def _imaging_model(cfg):
+    """'scalar' 或 'vector'。"""
+    return str(getattr(cfg, "IMAGING_MODEL", "scalar")).lower()
+
+
+def _is_vector(cfg):
+    return _imaging_model(cfg) == "vector"
+
+
+def _immersion_n(cfg):
+    n = float(getattr(cfg, "IMMERSION_N", 1.44))
+    if n <= 0.0:
+        raise ValueError("IMMERSION_N 必须 > 0")
+    return n
+
+
+def _defocus_phase(cfg, nu, n_medium):
+    """离焦相位 (2π/λ)·Δz·(√(n²−(NA·ν)²) − n)。
+
+    标量模式传 n_medium=1.0，与历史公式 √(1−(NA·ν)²)−1 完全一致；
+    矢量模式传浸没折射率 n，得到正确的浸没离焦相位。
+    """
+    lam, na = cfg.WAVELENGTH_NM, cfg.NA
+    return (2.0 * np.pi / lam) * cfg.DEFOCUS_NM * (
+        np.sqrt(np.maximum(n_medium ** 2 - (na * nu) ** 2, 0.0)) - n_medium)
+
 
 def _n_fft(cfg):
     """FFT 网格尺寸。周期边界模式 = GRID_N（视场即一个周期）；
@@ -311,12 +338,12 @@ def _pupil_for_source(cfg, FX, FY, fc, fsx, fsy):
     nu = np.sqrt((FX + fsx) ** 2 + (FY + fsy) ** 2) / fc   # 归一化频率
     P = np.zeros(FX.shape, dtype=np.complex128)
     inside = nu <= 1.0
-    # 光瞳透过：|ν|≤1 处为 1；离焦相位（标量模型）：
-    #   exp[j·(2π/λ)·Δz·(√(1−(NA·ν)²) − 1)]，±Δz 互为共轭 → I(+z)=I(−z)
+    # 光瞳透过：|ν|≤1 处为 1；离焦相位：
+    #   exp[j·(2π/λ)·Δz·(√(n²−(NA·ν)²) − n)]
+    # 标量模式 n=1（与历史公式一致）；矢量模式用浸没折射率。
     if cfg.DEFOCUS_NM != 0.0:
-        lam, na = cfg.WAVELENGTH_NM, cfg.NA
-        ph = (2 * np.pi / lam) * cfg.DEFOCUS_NM * \
-             (np.sqrt(np.maximum(1.0 - (na * nu[inside]) ** 2, 0.0)) - 1.0)
+        n_medium = _immersion_n(cfg) if _is_vector(cfg) else 1.0
+        ph = _defocus_phase(cfg, nu[inside], n_medium)
         P[inside] = np.exp(1j * ph)
     else:
         P[inside] = 1.0
@@ -368,9 +395,14 @@ def precompute_source_and_pupil(cfg):
     cache_mb = float(getattr(cfg, "PUPIL_CACHE_MB", 512.0))
     need_mb = len(weights) * N * N * 16.0 / (1024.0 ** 2)
     if need_mb <= cache_mb:
-        pupils = [_pupil_for_source(cfg, FX, FY, fc, fsx, fsy)
-                  for fsx, fsy in fs]
-        pupil_cached = True
+        try:
+            pupils = [_pupil_for_source(cfg, FX, FY, fc, fsx, fsy)
+                      for fsx, fsy in fs]
+            pupil_cached = True
+        except MemoryError:
+            # 系统实际可用内存不足时也退回按需构建，避免直接崩溃
+            pupils = None
+            pupil_cached = False
     else:
         pupils = None
         pupil_cached = False
@@ -385,6 +417,120 @@ def precompute_source_and_pupil(cfg):
 
 
 # ------------------------------------------------------------------
+# 高 NA 矢量成像（薄掩模）
+# ------------------------------------------------------------------
+
+def _vector_geometry(cfg, FX, FY, fc, fsx, fsy):
+    """返回每个频率分量的 (sinθ, cosθ, φ)。
+
+    θ 是像方出射角；φ 是 (f+f_s) 的方位角。
+    方向余弦：sinθ = (NA/n)·|f+f_s|/(NA/λ) = (NA/n)·ν。
+    """
+    fqx = FX + fsx
+    fqy = FY + fsy
+    nu = np.sqrt(fqx * fqx + fqy * fqy) / fc
+    n = _immersion_n(cfg)
+    sin_t = (cfg.NA / n) * nu
+    cos_t = np.sqrt(np.maximum(1.0 - sin_t ** 2, 0.0))
+    phi = np.arctan2(fqy, fqx)
+    return sin_t, cos_t, phi
+
+
+def _vector_fields(MP, sin_t, cos_t, sin_phi, cos_phi, ex, ey):
+    """给定入射偏振 (ex,ey) 和光瞳/掩模谱 MP，返回像面 3D 场的三个分量。
+
+    薄掩模：每个衍射级保留入射偏振；透镜把 ẑ 方向旋转到 k̂(θ,φ)。
+    旋转轴 ŝ = (-sinφ, cosφ, 0)，旋转角 θ（Rodrigues 公式）。
+    入射偏振假定在掩模平面内 (z=0)。
+    """
+    s_dot_e = -ex * sin_phi + ey * cos_phi
+    one_minus_cos = 1.0 - cos_t
+    tx = ex * cos_t - sin_phi * s_dot_e * one_minus_cos
+    ty = ey * cos_t + cos_phi * s_dot_e * one_minus_cos
+    tz = -(ex * cos_phi + ey * sin_phi) * sin_t
+
+    Ex = np.fft.fftshift(np.fft.ifft2(MP * tx))
+    Ey = np.fft.fftshift(np.fft.ifft2(MP * ty))
+    Ez = np.fft.fftshift(np.fft.ifft2(MP * tz))
+    return Ex, Ey, Ez
+
+
+def _linear_incident_state(cfg, fsx, fsy):
+    """返回纯线偏振入射态的 (ex, ey)。
+
+    'x'/'y'/'linear' 与源点无关；'te'/'tm' 按源点方位角定义。
+    """
+    pol = str(getattr(cfg, "POLARIZATION", "unpolarized")).lower()
+    if pol == "x":
+        return 1.0, 0.0
+    if pol == "y":
+        return 0.0, 1.0
+    if pol == "linear":
+        psi = np.deg2rad(float(getattr(cfg, "POLARIZATION_ANGLE_DEG", 0.0)))
+        return float(np.cos(psi)), float(np.sin(psi))
+    phi_s = np.arctan2(fsy, fsx)
+    if pol in ("te", "azimuthal"):
+        return -float(np.sin(phi_s)), float(np.cos(phi_s))
+    if pol in ("tm", "radial"):
+        return float(np.cos(phi_s)), float(np.sin(phi_s))
+    raise ValueError(
+        "未知 POLARIZATION=%r，可选: unpolarized / x / y / linear / "
+        "circular / te / tm" % pol)
+
+
+def _aerial_image_vector(M, cfg, precomp, n_fft):
+    """高 NA 矢量薄掩模 Abbe 前向。"""
+    weights = precomp["weights"]
+    fs = precomp["fs"]
+    pupils = precomp.get("pupils")
+    FX, FY, fc = precomp["FX"], precomp["FY"], precomp["fc"]
+    pol = str(getattr(cfg, "POLARIZATION", "unpolarized")).lower()
+    if pol not in ("unpolarized", "circular", "x", "y", "linear",
+                   "te", "tm", "azimuthal", "radial"):
+        raise ValueError(
+            "未知 POLARIZATION=%r，可选: unpolarized / x / y / linear / "
+            "circular / te / tm" % pol)
+
+    I = np.zeros((n_fft, n_fft), dtype=np.float64)
+    for idx, (w_s, (fsx, fsy)) in enumerate(zip(weights, fs)):
+        if pupils is not None:
+            P_s = pupils[idx]
+        else:
+            P_s = _pupil_for_source(cfg, FX, FY, fc, fsx, fsy)
+        MP = M * P_s
+        sin_t, cos_t, phi = _vector_geometry(cfg, FX, FY, fc, fsx, fsy)
+        sin_phi = np.sin(phi)
+        cos_phi = np.cos(phi)
+
+        if pol == "unpolarized":
+            # 两个正交线偏振的强度平均；逐态累加，降低峰值内存
+            for ex, ey in ((1.0, 0.0), (0.0, 1.0)):
+                Ex, Ey, Ez = _vector_fields(
+                    MP, sin_t, cos_t, sin_phi, cos_phi, ex, ey)
+                I += 0.5 * w_s * (
+                    np.abs(Ex) ** 2 + np.abs(Ey) ** 2 + np.abs(Ez) ** 2)
+                del Ex, Ey, Ez
+        elif pol == "circular":
+            # 右旋圆偏振 (x + i y)/√2：先算两个线偏振场，再相干合成
+            Ex1, Ey1, Ez1 = _vector_fields(
+                MP, sin_t, cos_t, sin_phi, cos_phi, 1.0, 0.0)
+            Ex2, Ey2, Ez2 = _vector_fields(
+                MP, sin_t, cos_t, sin_phi, cos_phi, 0.0, 1.0)
+            s = 1.0 / np.sqrt(2.0)
+            Ex = (Ex1 + 1j * Ex2) * s
+            Ey = (Ey1 + 1j * Ey2) * s
+            Ez = (Ez1 + 1j * Ez2) * s
+            I += w_s * (np.abs(Ex) ** 2 + np.abs(Ey) ** 2 + np.abs(Ez) ** 2)
+        else:
+            ex, ey = _linear_incident_state(cfg, fsx, fsy)
+            Ex, Ey, Ez = _vector_fields(
+                MP, sin_t, cos_t, sin_phi, cos_phi, ex, ey)
+            I += w_s * (np.abs(Ex) ** 2 + np.abs(Ey) ** 2 + np.abs(Ez) ** 2)
+
+    return I
+
+
+# ------------------------------------------------------------------
 # 空间像计算
 # ------------------------------------------------------------------
 
@@ -395,6 +541,9 @@ def aerial_image(mask, cfg, precomp):
       周期（默认）：掩模直接做 FFT，视场即一个周期——循环卷积给出严格的
         周期边界，相邻周期之间没有间隙、没有零填充。
       孤立：掩模零填充到 2N 后计算，再裁中心 N×N（线性卷积，无环绕）。
+
+    成像模型由 cfg.IMAGING_MODEL 决定：'scalar' 为标量 Abbe；
+    'vector' 为高 NA 矢量薄掩模（见 _aerial_image_vector）。
 
     参数:
       mask     : 像素版图（1=不透明图形），shape (N,N)
@@ -416,21 +565,24 @@ def aerial_image(mask, cfg, precomp):
     # FFT 三件套之一：ifftshift 把图像中心（原点）移到数组 [0,0] 角
     M = np.fft.fft2(np.fft.ifftshift(T))
 
-    I = np.zeros((n_fft, n_fft), dtype=np.float64)
-    pupils = precomp.get("pupils")
-    if pupils is not None:
-        # 光瞳已预计算（默认情况）
-        for w_s, P_s in zip(precomp["weights"], pupils):
-            # ifft2 自带 1/N² 归一化；fftshift 把原点移回图像中心
-            E_s = np.fft.fftshift(np.fft.ifft2(M * P_s))
-            I += w_s * np.abs(E_s) ** 2
+    if _is_vector(cfg):
+        I = _aerial_image_vector(M, cfg, precomp, n_fft)
     else:
-        # 光源点数多、光瞳未缓存：按需构建，内存 O(N²)
-        FX, FY, fc = precomp["FX"], precomp["FY"], precomp["fc"]
-        for w_s, (fsx, fsy) in zip(precomp["weights"], precomp["fs"]):
-            P_s = _pupil_for_source(cfg, FX, FY, fc, fsx, fsy)
-            E_s = np.fft.fftshift(np.fft.ifft2(M * P_s))
-            I += w_s * np.abs(E_s) ** 2
+        I = np.zeros((n_fft, n_fft), dtype=np.float64)
+        pupils = precomp.get("pupils")
+        if pupils is not None:
+            # 光瞳已预计算（默认情况）
+            for w_s, P_s in zip(precomp["weights"], pupils):
+                # ifft2 自带 1/N² 归一化；fftshift 把原点移回图像中心
+                E_s = np.fft.fftshift(np.fft.ifft2(M * P_s))
+                I += w_s * np.abs(E_s) ** 2
+        else:
+            # 光源点数多、光瞳未缓存：按需构建，内存 O(N²)
+            FX, FY, fc = precomp["FX"], precomp["FY"], precomp["fc"]
+            for w_s, (fsx, fsy) in zip(precomp["weights"], precomp["fs"]):
+                P_s = _pupil_for_source(cfg, FX, FY, fc, fsx, fsy)
+                E_s = np.fft.fftshift(np.fft.ifft2(M * P_s))
+                I += w_s * np.abs(E_s) ** 2
     if n_fft != N:
         # 裁掉填充区，回到 GRID_N 视场
         c0 = (n_fft - N) // 2
@@ -483,6 +635,11 @@ def self_check(cfg):
     5. 离焦：I(+z)=I(−z)，且离焦使边缘斜率下降（验证光瞳相位；
        光源非中心对称时跳过对称性判据）
     6. 周期边界：循环平移不变性与跨边界图形连续性
+
+    矢量模式（IMAGING_MODEL='vector'）额外检查：
+    7. 矢量开域：x / y 偏振的空掩模像都应 = 1
+    8. 非偏振平均：I_unpol = (I_x + I_y)/2
+    9. 偏振效应：x / y 偏振对竖直细线的像应不同
     """
     from mask_ops import polygons_to_pixels
 
@@ -632,6 +789,37 @@ def self_check(cfg):
         report("周期边界条件", err < 1e-9 and wrap_ok,
                "循环平移不变性误差 %.1e；跨界图形上下边缘像差 %.3f"
                % (err, np.max(np.abs(row_top - row_bot))))
+
+    # ---- 矢量模式附加检查 ----
+    if _is_vector(cfg):
+        cfg_x = _temp_cfg(cfg, POLARIZATION="x")
+        cfg_y = _temp_cfg(cfg, POLARIZATION="y")
+        pre_x = precompute_source_and_pupil(cfg_x)
+        pre_y = precompute_source_and_pupil(cfg_y)
+
+        # 矢量开域：x / y 偏振的空掩模像都应 = 1
+        zero = np.zeros((N, N), np.uint8)
+        Ix0 = aerial_image(zero, cfg_x, pre_x)
+        Iy0 = aerial_image(zero, cfg_y, pre_y)
+        err0 = max(np.max(np.abs(Ix0 - 1.0)), np.max(np.abs(Iy0 - 1.0)))
+        report("矢量开域", err0 < 1e-6, "max|I-1| = %.2e" % err0)
+
+        # 用一条竖直细线检验偏振效应；非偏振应是 x/y 的强度平均
+        vert = [np.array([[-40.0, -150.0], [40.0, -150.0],
+                          [40.0, 150.0], [-40.0, 150.0]])]
+        mask_v = polygons_to_pixels(vert, N, cfg.PIXEL_SIZE_NM)
+        Ix = aerial_image(mask_v, cfg_x, pre_x)
+        Iy = aerial_image(mask_v, cfg_y, pre_y)
+        pol = str(getattr(cfg, "POLARIZATION", "unpolarized")).lower()
+        if pol == "unpolarized":
+            Iu = aerial_image(mask_v, cfg, pre)
+            avg = 0.5 * (Ix + Iy)
+            err = np.max(np.abs(Iu - avg))
+            report("非偏振平均", err < 1e-12,
+                   "max|I_unpol - (I_x+I_y)/2| = %.2e" % err)
+        d = float(np.max(np.abs(Ix - Iy)))
+        report("矢量偏振效应", d > 1e-3,
+               "x-pol vs y-pol max|ΔI| = %.4f（应 > 1e-3）" % d)
 
     print("自检结果: %d/%d PASS%s"
           % (sum(ok for _, ok, _ in results), len(results),

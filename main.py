@@ -56,6 +56,13 @@ def main():
              config.RESIST_THRESHOLD,
              ", 离焦 %.0f nm" % config.DEFOCUS_NM
              if config.DEFOCUS_NM else ""))
+    img_model = str(getattr(config, "IMAGING_MODEL", "scalar")).lower()
+    if img_model == "vector":
+        print("成像模型: vector, 偏振=%s, 浸没 n=%.2f"
+              % (getattr(config, "POLARIZATION", "unpolarized"),
+                 getattr(config, "IMMERSION_N", 1.44)))
+    else:
+        print("成像模型: scalar")
 
     # ---- 2. 迭代 OPC ----
     result = run_opc(target_pixels, target_polys, config)

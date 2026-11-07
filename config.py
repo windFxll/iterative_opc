@@ -73,6 +73,27 @@ SOURCE_MAP_FILE = ""
 SOURCE_MAP_MAX_N = 33       # 大图块平均降采样后的每方向最大格点数
 SOURCE_MAP_THRESHOLD = 1e-3 # 忽略低于最大强度该比例的格点（0=保留所有正值）
 
+# ---- 成像模型：标量 / 高 NA 矢量 ———— 改这里 ----
+# 'scalar'：标量 Hopkins/Abbe（默认；与历史结果完全一致）
+# 'vector'：高 NA 矢量薄掩模成像。每个衍射级把入射偏振旋转到出射方向，
+#           像强 = Σ_s w_s (|E_x|² + |E_y|² + |E_z|²)。
+#           注意：仍是薄掩模，不含掩模 3D/EMF、apodization、偏振像差。
+IMAGING_MODEL = "scalar"
+
+# 矢量模式的照明偏振：
+#   'unpolarized'  非偏振（两个正交线偏振的强度平均）
+#   'x' / 'y'      沿 x / y 的线偏振
+#   'linear'       线偏振，方向由 POLARIZATION_ANGLE_DEG 给出
+#   'circular'     右旋圆偏振 (x + i y)/√2
+#   'te' / 'tm'    切向（方位角）/ 径向偏振（每个源点方向不同）
+POLARIZATION = "unpolarized"
+POLARIZATION_ANGLE_DEG = 0.0
+
+# 浸没介质折射率（矢量方向余弦用）；干式系统设 1.0。
+# 注意：标量模式仍用 n=1 的离焦相位，保持历史结果不变；
+# 矢量模式用该折射率计算 sinθ = NA·ν/n 和离焦相位。
+IMMERSION_N = 1.44
+
 # 版图边界条件 ———— 改这里
 #   'periodic' 周期边界（默认）：视场就是版图的一个周期，相邻周期无缝拼接。
 #      FFT 循环卷积天然实现；跨视场边界的图形会自动环绕到对面。
